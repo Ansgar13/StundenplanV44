@@ -1,4 +1,5 @@
 using Google.OrTools.Sat;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -10,14 +11,22 @@ namespace Stundenplan_V2
         public int Early;
         public int Late;
         public int BadUnits;
+        public int Hohlstunden;
+        public int DoppelHohlstunden;
+        public int DreifachHohlstunden;
+        public int Einzelstunden;
+        public int SpäteLkStunden;
+        public int HauptfachSpätÜberschuss;
         public List<string> Details = new();
     }
 
     public static class PlanBewertung
     {
+        private static readonly HashSet<string> Hauptfächer =
+            new HashSet<string> { "D", "E", "M", "F" };
+
         // -------------------------------------------------
-        // Bewertung eines fertigen Plans
-        // Gewichte aus Parameter-Tabelle (B6-B8)
+        // Bewertung eines fertigen Plans – vollständig
         // -------------------------------------------------
         public static BewertungsResultat Berechne(
             int[,] belegung,
@@ -25,16 +34,25 @@ namespace Stundenplan_V2
             List<ZeitSlot> slots,
             int gewichtFrüh = 1,
             int gewichtSpät = 5,
-            int gewichtPäd = 5)
+            int gewichtPäd = 5,
+            int strafeHohl = 0,
+            int strafeDoppelHohl = 0,
+            int strafeDreifachHohl = 0,
+            int strafeEinzel = 0,
+            int strafeSpäteLk = 0,
+            int strafeHauptfachSpät = 0,
+            int hauptfachSpätAnteilProzent = 50)
         {
             var result = new BewertungsResultat();
+            int B = blocks.Count;
+            int S = slots.Count;
 
             // -------------------------------------------------
             // Doppelstunden zählen
             // -------------------------------------------------
-            for (int b = 0; b < blocks.Count; b++)
+            for (int b = 0; b < B; b++)
             {
-                for (int s = 0; s < slots.Count - 1; s++)
+                for (int s = 0; s < S - 1; s++)
                 {
                     if (slots[s].WTag == slots[s + 1].WTag &&
                         slots[s].Stunde + 1 == slots[s + 1].Stunde)
@@ -51,43 +69,34 @@ namespace Stundenplan_V2
             }
 
             // -------------------------------------------------
-            // späte pädagogische Einheiten
+            // Späte pädagogische Einheiten
             // -------------------------------------------------
             var latePerUnit = new Dictionary<string, int>();
-            var unitUnr = new Dictionary<string, int>();
+            var unitUnr     = new Dictionary<string, int>();
 
-            for (int b = 0; b < blocks.Count; b++)
+            for (int b = 0; b < B; b++)
             {
                 var block = blocks[b];
-
-                for (int s = 0; s < slots.Count; s++)
+                for (int s = 0; s < S; s++)
                 {
-                    if (belegung[b, s] != 1)
-                        continue;
+                    if (belegung[b, s] != 1) continue;
 
                     var countedClasses = new HashSet<string>();
-
                     foreach (var teil in block.Teile)
-                    {
                         foreach (var k in teil.Klassen)
                         {
-                            if (countedClasses.Contains(k))
-                                continue;
-
+                            if (countedClasses.Contains(k)) continue;
                             countedClasses.Add(k);
 
                             string key = k + "|" + block.Zeilentext;
-
                             if (!latePerUnit.ContainsKey(key))
                             {
                                 latePerUnit[key] = 0;
                                 unitUnr[key] = block.UNr;
                             }
-
                             if (slots[s].Stunde >= 6)
                                 latePerUnit[key]++;
                         }
-                    }
                 }
             }
 
@@ -95,23 +104,154 @@ namespace Stundenplan_V2
             {
                 if (kv.Value >= 2)
                 {
-                    var parts = kv.Key.Split('|');
-                    string klasse = parts[0];
-                    string zeilentext = parts[1];
-                    int unr = unitUnr[kv.Key];
-
+                    var parts      = kv.Key.Split('|');
+                    string klasse  = parts[0];
+                    string ztext   = parts[1];
+                    int unr        = unitUnr[kv.Key];
                     result.BadUnits++;
-                    result.Details.Add($"{klasse} | UNr {unr} | {zeilentext}");
+                    result.Details.Add($"{klasse} | UNr {unr} | {ztext}");
                 }
             }
 
             // -------------------------------------------------
-            // Qualitätsfunktion mit konfigurierbaren Gewichten
+            // Hohlstunden, Einzelstunden pro Lehrer
+            // -------------------------------------------------
+            var alleLehrer = blocks
+                .SelectMany(b => b.Teile.Select(t => t.Lehrer))
+                .Distinct().ToList();
+            var tage = slots.Select(s => s.WTag).Distinct().ToList();
+
+            foreach (var lehrer in alleLehrer)
+            {
+                var lehrerBlöcke = Enumerable.Range(0, B)
+                    .Where(b => blocks[b].Teile.Any(t => t.Lehrer == lehrer))
+                    .ToList();
+
+                foreach (var tag in tage)
+                {
+                    var tagesSlots = Enumerable.Range(0, S)
+                        .Where(s => slots[s].WTag == tag)
+                        .OrderBy(s => slots[s].Stunde)
+                        .ToList();
+
+                    if (tagesSlots.Count == 0) continue;
+
+                    var mitUnterricht = new HashSet<int>();
+                    foreach (var s in tagesSlots)
+                        foreach (var b in lehrerBlöcke)
+                            if (belegung[b, s] == 1)
+                                mitUnterricht.Add(slots[s].Stunde);
+
+                    if (mitUnterricht.Count == 0) continue;
+
+                    int ersteStd  = mitUnterricht.Min();
+                    int letzteStd = mitUnterricht.Max();
+
+                    // Einzelstunden
+                    if (mitUnterricht.Count == 1)
+                        result.Einzelstunden++;
+
+                    // Hohlstunden
+                    int hohlFolge = 0;
+                    for (int std = ersteStd + 1; std <= letzteStd; std++)
+                    {
+                        bool hatUnterricht = mitUnterricht.Contains(std);
+                        bool istLetzte     = std == letzteStd;
+
+                        if (!hatUnterricht && !istLetzte)
+                        {
+                            result.Hohlstunden++;
+                            hohlFolge++;
+                        }
+                        else
+                        {
+                            if (hohlFolge >= 3) result.DreifachHohlstunden++;
+                            else if (hohlFolge == 2) result.DoppelHohlstunden++;
+                            hohlFolge = 0;
+                        }
+                    }
+                }
+            }
+
+            // -------------------------------------------------
+            // Späte LK-Stunden (mehr als 2 nach Stunde 5)
+            // -------------------------------------------------
+            if (strafeSpäteLk != 0)
+            {
+                var lkBlöcke = Enumerable.Range(0, B)
+                    .Where(b => blocks[b].Teile.Any(t =>
+                        t.Fach.Trim().ToUpper().EndsWith("L1") ||
+                        t.Fach.Trim().ToUpper().EndsWith("L2")))
+                    .ToList();
+
+                foreach (var tag in tage)
+                {
+                    int späteLkDieserTag = 0;
+                    var spätSlots = Enumerable.Range(0, S)
+                        .Where(s => slots[s].WTag == tag && slots[s].Stunde > 5)
+                        .ToList();
+
+                    foreach (var s in spätSlots)
+                        foreach (var b in lkBlöcke)
+                            if (belegung[b, s] == 1)
+                                späteLkDieserTag++;
+
+                    if (späteLkDieserTag > 2)
+                        result.SpäteLkStunden += späteLkDieserTag - 2;
+                }
+            }
+
+            // -------------------------------------------------
+            // Hauptfach nicht zu spät (D,E,M,F)
+            // -------------------------------------------------
+            if (strafeHauptfachSpät != 0)
+            {
+                var einheiten = new Dictionary<(string klasse, string fach), List<int>>();
+                for (int b = 0; b < B; b++)
+                    foreach (var t in blocks[b].Teile)
+                    {
+                        string fach = t.Fach.Trim();
+                        if (!Hauptfächer.Contains(fach)) continue;
+                        foreach (var klasse in t.Klassen)
+                        {
+                            var key = (klasse, fach);
+                            if (!einheiten.ContainsKey(key))
+                                einheiten[key] = new List<int>();
+                            if (!einheiten[key].Contains(b))
+                                einheiten[key].Add(b);
+                        }
+                    }
+
+                foreach (var kv in einheiten)
+                {
+                    int gesamtWst   = kv.Value.Sum(b => blocks[b].Wst);
+                    int erlaubtSpät = (int)Math.Floor(
+                        gesamtWst * hauptfachSpätAnteilProzent / 100.0);
+
+                    int spätStunden = 0;
+                    foreach (int b in kv.Value)
+                        for (int s = 0; s < S; s++)
+                            if (belegung[b, s] == 1 && slots[s].Stunde >= 5)
+                                spätStunden++;
+
+                    result.HauptfachSpätÜberschuss +=
+                        Math.Max(0, spätStunden - erlaubtSpät);
+                }
+            }
+
+            // -------------------------------------------------
+            // Qualitätsfunktion – vollständig
             // -------------------------------------------------
             result.Quality =
-                result.Early * gewichtFrüh
-                - result.Late * gewichtSpät
-                - result.BadUnits * gewichtPäd;
+                result.Early                   *  gewichtFrüh
+                - result.Late                  *  gewichtSpät
+                - result.BadUnits              *  gewichtPäd
+                - result.Hohlstunden           *  strafeHohl
+                - result.DoppelHohlstunden     *  strafeDoppelHohl
+                - result.DreifachHohlstunden   *  strafeDreifachHohl
+                - result.Einzelstunden         *  strafeEinzel
+                - result.SpäteLkStunden        *  strafeSpäteLk
+                - result.HauptfachSpätÜberschuss * strafeHauptfachSpät;
 
             return result;
         }
@@ -125,31 +265,25 @@ namespace Stundenplan_V2
             List<UnterrichtsBlock> blocks,
             List<ZeitSlot> slots)
         {
-            var badVars = new List<BoolVar>();
+            var badVars     = new List<BoolVar>();
             var paedEinheiten = new Dictionary<string, List<int>>();
 
             for (int b = 0; b < blocks.Count; b++)
             {
-                var block = blocks[b];
-                var seenClasses = new HashSet<string>();
+                var block        = blocks[b];
+                var seenClasses  = new HashSet<string>();
 
                 foreach (var t in block.Teile)
-                {
                     foreach (var k in t.Klassen)
                     {
-                        if (seenClasses.Contains(k))
-                            continue;
-
+                        if (seenClasses.Contains(k)) continue;
                         seenClasses.Add(k);
 
                         string key = k + "|" + block.Zeilentext;
-
                         if (!paedEinheiten.ContainsKey(key))
                             paedEinheiten[key] = new List<int>();
-
                         paedEinheiten[key].Add(b);
                     }
-                }
             }
 
             foreach (var kv in paedEinheiten)
@@ -162,10 +296,10 @@ namespace Stundenplan_V2
                         if (slots[s].Stunde >= 6)
                             lateVars.Add(x[b, s]);
 
-                if (lateVars.Count == 0)
-                    continue;
+                if (lateVars.Count == 0) continue;
 
-                IntVar lateCount = model.NewIntVar(0, lateVars.Count, $"late_{kv.Key}");
+                IntVar lateCount = model.NewIntVar(
+                    0, lateVars.Count, $"late_{kv.Key}");
                 model.Add(lateCount == LinearExpr.Sum(lateVars));
 
                 BoolVar bad = model.NewBoolVar($"bad_{kv.Key}");

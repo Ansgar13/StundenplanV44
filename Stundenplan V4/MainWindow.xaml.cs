@@ -284,7 +284,14 @@ namespace Stundenplan_V2
                     input.Slots,
                     input.GewichtFrüheDoppel,
                     input.GewichtSpäteDoppel,
-                    input.GewichtSpätePädEinheiten);
+                    input.GewichtSpätePädEinheiten,
+                    input.StrafeHohlstunde,
+                    input.StrafeDoppelHohlstunde,
+                    input.StrafeDreifachHohlstunde,
+                    input.StrafeEinzelstunde,
+                    input.StrafeSpäteLkStunden,
+                    input.StrafeHauptfachSpät,
+                    input.HauptfachSpätAnteilProzent);
 
                 var unrPlan = (bewertung.Quality, bewertung.BadUnits, belegung, "UNrPlan", input.Blocks);
 
@@ -832,13 +839,19 @@ namespace Stundenplan_V2
 
             var sheet = workbook.Worksheets.Add("SolverRanking");
 
-            sheet.Cell(1, 1).Value = "Plan";
-            sheet.Cell(1, 2).Value = "Label";
-            sheet.Cell(1, 3).Value = "Qualität";
-            sheet.Cell(1, 4).Value = "frühe Doppel";
-            sheet.Cell(1, 5).Value = "späte Doppel";
-            sheet.Cell(1, 6).Value = "pädagogische Einheiten spät";
-            sheet.Cell(1, 7).Value = "Details späte pädagogische Einheiten";
+            sheet.Cell(1, 1).Value  = "Plan";
+            sheet.Cell(1, 2).Value  = "Label";
+            sheet.Cell(1, 3).Value  = "Qualität";
+            sheet.Cell(1, 4).Value  = "frühe Doppel";
+            sheet.Cell(1, 5).Value  = "späte Doppel";
+            sheet.Cell(1, 6).Value  = "päd. Einheiten spät";
+            sheet.Cell(1, 7).Value  = "Hohlstunden";
+            sheet.Cell(1, 8).Value  = "Doppelhohlstunden";
+            sheet.Cell(1, 9).Value  = "Dreifachhohlstunden";
+            sheet.Cell(1, 10).Value = "Einzelstunden";
+            sheet.Cell(1, 11).Value = "späte LK-Stunden";
+            sheet.Cell(1, 12).Value = "Hauptfach zu spät";
+            sheet.Cell(1, 13).Value = "Details späte päd. Einheiten";
             sheet.Row(1).Style.Font.Bold = true;
 
             for (int p = 0; p < solutions.Count; p++)
@@ -849,16 +862,29 @@ namespace Stundenplan_V2
                     input.Slots,
                     input.GewichtFrüheDoppel,
                     input.GewichtSpäteDoppel,
-                    input.GewichtSpätePädEinheiten);
+                    input.GewichtSpätePädEinheiten,
+                    input.StrafeHohlstunde,
+                    input.StrafeDoppelHohlstunde,
+                    input.StrafeDreifachHohlstunde,
+                    input.StrafeEinzelstunde,
+                    input.StrafeSpäteLkStunden,
+                    input.StrafeHauptfachSpät,
+                    input.HauptfachSpätAnteilProzent);
 
-                sheet.Cell(p + 2, 1).Value = p + 1;
-                sheet.Cell(p + 2, 2).Value = solutions[p].label;
-                sheet.Cell(p + 2, 3).Value = bewertung.Quality;
-                sheet.Cell(p + 2, 4).Value = bewertung.Early;
-                sheet.Cell(p + 2, 5).Value = bewertung.Late;
-                sheet.Cell(p + 2, 6).Value = bewertung.BadUnits;
-                sheet.Cell(p + 2, 7).Value = string.Join("\n", bewertung.Details);
-                sheet.Cell(p + 2, 7).Style.Alignment.WrapText = true;
+                sheet.Cell(p + 2, 1).Value  = p + 1;
+                sheet.Cell(p + 2, 2).Value  = solutions[p].label;
+                sheet.Cell(p + 2, 3).Value  = bewertung.Quality;
+                sheet.Cell(p + 2, 4).Value  = bewertung.Early;
+                sheet.Cell(p + 2, 5).Value  = bewertung.Late;
+                sheet.Cell(p + 2, 6).Value  = bewertung.BadUnits;
+                sheet.Cell(p + 2, 7).Value  = bewertung.Hohlstunden;
+                sheet.Cell(p + 2, 8).Value  = bewertung.DoppelHohlstunden;
+                sheet.Cell(p + 2, 9).Value  = bewertung.DreifachHohlstunden;
+                sheet.Cell(p + 2, 10).Value = bewertung.Einzelstunden;
+                sheet.Cell(p + 2, 11).Value = bewertung.SpäteLkStunden;
+                sheet.Cell(p + 2, 12).Value = bewertung.HauptfachSpätÜberschuss;
+                sheet.Cell(p + 2, 13).Value = string.Join("\n", bewertung.Details);
+                sheet.Cell(p + 2, 13).Style.Alignment.WrapText = true;
             }
 
             sheet.Columns().AdjustToContents();
@@ -875,6 +901,10 @@ namespace Stundenplan_V2
             int[,] belegung = new int[B, S];
 
             using var wb = new XLWorkbook(excelPfad);
+
+            if (!wb.Worksheets.Any(ws => ws.Name == "Unr-Plan"))
+                return null;
+
             var sheet = wb.Worksheet("Unr-Plan");
 
             for (int s = 0; s < S; s++)
@@ -904,7 +934,14 @@ namespace Stundenplan_V2
                 belegung, input.Blocks, input.Slots,
                 input.GewichtFrüheDoppel,
                 input.GewichtSpäteDoppel,
-                input.GewichtSpätePädEinheiten);
+                input.GewichtSpätePädEinheiten,
+                input.StrafeHohlstunde,
+                input.StrafeDoppelHohlstunde,
+                input.StrafeDreifachHohlstunde,
+                input.StrafeEinzelstunde,
+                input.StrafeSpäteLkStunden,
+                input.StrafeHauptfachSpät,
+                input.HauptfachSpätAnteilProzent);
             return (b.Quality, b.BadUnits, belegung, "UNrPlan", input.Blocks);
         }
 

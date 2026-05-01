@@ -641,7 +641,14 @@ namespace Stundenplan_V2
                     return PlanBewertung.Berechne(belegung, blocks, slots,
                         input.GewichtFrüheDoppel,
                         input.GewichtSpäteDoppel,
-                        input.GewichtSpätePädEinheiten).Quality;
+                        input.GewichtSpätePädEinheiten,
+                        input.StrafeHohlstunde,
+                        input.StrafeDoppelHohlstunde,
+                        input.StrafeDreifachHohlstunde,
+                        input.StrafeEinzelstunde,
+                        input.StrafeSpäteLkStunden,
+                        input.StrafeHauptfachSpät,
+                        input.HauptfachSpätAnteilProzent).Quality;
 
                 case VerbesserungsZiel.SpäteDoppelstunden:
                     return -PlanBewertung.Berechne(belegung, blocks, slots, 1, 1, 0).Late;
