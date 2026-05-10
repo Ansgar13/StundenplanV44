@@ -481,3 +481,7 @@ $RECYCLE.BIN/
 # Vim temporary swap files
 *.swp
 /Stundenplan V4/abseil_dll.dll
+*.exe
+*.zip
+*.dll
+OneDrive*/

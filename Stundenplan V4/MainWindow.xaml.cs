@@ -90,9 +90,41 @@ namespace Stundenplan_V2
                 return;
             }
 
+            var statusFenster = new Window
+            {
+                Title = "Bitte warten",
+                Width = 300,
+                Height = 120,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                Owner = this,
+                ResizeMode = ResizeMode.NoResize,
+                WindowStyle = WindowStyle.ToolWindow,
+                Topmost = true
+            };
+
+            var txt = new System.Windows.Controls.TextBlock
+            {
+                Text = "Engine sucht ...",
+                FontSize = 16,
+                FontWeight = FontWeights.SemiBold,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+
+            statusFenster.Content = txt;
+            statusFenster.Show();
+
+            // UI sofort rendern, bevor der Solver den Thread blockiert
+            System.Windows.Threading.Dispatcher.CurrentDispatcher.Invoke(
+                System.Windows.Threading.DispatcherPriority.Render,
+                new Action(() => { }));
+
             Log("Starte Solver...");
 
             var solutions = service.Generate(input, Log, out string debug);
+
+            statusFenster.Close();
+
 
             if (solutions.Count == 0)
             {
@@ -302,6 +334,26 @@ namespace Stundenplan_V2
                 // In Lösungen-Tabelle eintragen
                 SchreibeInExcel(letzteSolutions);
                 SchreibeRanking(letzteSolutions);
+
+                // Diagnose-Tabelle aktualisieren inkl. UNrPlan
+                try
+                {
+                    var diagnoseDaten = letzteSolutions
+                        .Select(sol => (
+                            sol.label,
+                            LehrerDiagnose.Berechne(
+                                sol.belegung,
+                                sol.blocks,
+                                input.Slots,
+                                input.LehrerStammdaten,
+                                input.StrafeHohlstunde,
+                                input.StrafeDoppelHohlstunde,
+                                input.StrafeDreifachHohlstunde,
+                                input.StrafeStdFolge)))
+                        .ToList();
+                    LehrerDiagnose.Exportiere(excelPfad, diagnoseDaten);
+                }
+                catch { /* Diagnose-Fehler ignorieren */ }
 
                 Log($"UNr-Plan bewertet: Qualität={bewertung.Quality}, " +
                     $"FrüheDoppel={bewertung.Early}, SpäteDoppel={bewertung.Late}, " +
@@ -943,6 +995,255 @@ namespace Stundenplan_V2
                 input.StrafeHauptfachSpät,
                 input.HauptfachSpätAnteilProzent);
             return (b.Quality, b.BadUnits, belegung, "UNrPlan", input.Blocks);
+        }
+
+        // =====================================================
+        // BUTTON 10 – FIX UNRN LÖSCHEN
+        // =====================================================
+        private void BtnFixUNrnLoeschen_Click(object sender, RoutedEventArgs e)
+        {
+            if (input == null)
+            {
+                MessageBox.Show("Bitte zuerst Excel-Datei laden (Button 2).");
+                return;
+            }
+
+            // Alle Einzelklassen aus den Blöcken sammeln
+            var alleEinzelKlassen = input.Blocks
+                .SelectMany(b => b.Teile.SelectMany(t => t.Klassen))
+                .Distinct()
+                .OrderBy(k => k)
+                .ToList();
+
+            // Alle Klassenkombinationen (wie sie in der U-Verteilung vorkommen)
+            var alleKombinationen = input.Blocks
+                .SelectMany(b => b.Teile
+                    .Where(t => t.Klassen.Count > 1)
+                    .Select(t => string.Join(", ", t.Klassen.OrderBy(k => k))))
+                .Distinct()
+                .OrderBy(k => k)
+                .ToList();
+
+            // Kombinierte Liste: Einzelklassen + Kombinationen
+            var alleKlassenOptionen = alleEinzelKlassen
+                .Concat(alleKombinationen)
+                .Distinct()
+                .OrderBy(k => k)
+                .ToList();
+
+            // Alle Fächer sammeln
+            var alleFächer = input.Blocks
+                .SelectMany(b => b.Teile.Select(t => t.Fach.Trim()))
+                .Where(f => !string.IsNullOrEmpty(f))
+                .Distinct()
+                .OrderBy(f => f)
+                .ToList();
+
+            // Dialog aufbauen
+            var dlg = new Window
+            {
+                Title = "Fix UNrn löschen",
+                Width = 420,
+                Height = 500,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                Owner = this,
+                ResizeMode = ResizeMode.NoResize
+            };
+
+            var stack = new System.Windows.Controls.StackPanel { Margin = new Thickness(15) };
+
+            // Radiobuttons
+            var rbAlles = new System.Windows.Controls.RadioButton
+            {
+                Content = "Alle Fix UNrn löschen (Spalten WTag/Stunde bleiben)",
+                IsChecked = true,
+                Margin = new Thickness(0, 0, 0, 8)
+            };
+            var rbSelektiv = new System.Windows.Controls.RadioButton
+            {
+                Content = "Nur bestimmte Klassen/Fächer löschen",
+                Margin = new Thickness(0, 0, 0, 12)
+            };
+
+            // Klassen ListBox (Mehrfachauswahl)
+            var lblKlassen = new System.Windows.Controls.TextBlock
+            {
+                Text = "Klassen / Kombinationen (Mehrfachauswahl möglich):",
+                Margin = new Thickness(0, 0, 0, 4)
+            };
+            var lstKlassen = new System.Windows.Controls.ListBox
+            {
+                Height = 100,
+                Margin = new Thickness(0, 0, 0, 8),
+                SelectionMode = System.Windows.Controls.SelectionMode.Multiple
+            };
+            foreach (var k in alleKlassenOptionen)
+                lstKlassen.Items.Add(k);
+
+            // Fächer ListBox (Mehrfachauswahl)
+            var lblFächer = new System.Windows.Controls.TextBlock
+            {
+                Text = "Fächer (Mehrfachauswahl möglich):",
+                Margin = new Thickness(0, 0, 0, 4)
+            };
+            var lstFächer = new System.Windows.Controls.ListBox
+            {
+                Height = 100,
+                Margin = new Thickness(0, 0, 0, 12),
+                SelectionMode = System.Windows.Controls.SelectionMode.Multiple
+            };
+            foreach (var f in alleFächer)
+                lstFächer.Items.Add(f);
+
+            // Listen nur aktiv wenn selektiv
+            rbSelektiv.Checked += (s, ev) => { lstKlassen.IsEnabled = true; lstFächer.IsEnabled = true; };
+            rbAlles.Checked    += (s, ev) => { lstKlassen.IsEnabled = false; lstFächer.IsEnabled = false; };
+            lstKlassen.IsEnabled = false;
+            lstFächer.IsEnabled  = false;
+
+            // Buttons
+            var btnPanel = new System.Windows.Controls.StackPanel
+            {
+                Orientation = System.Windows.Controls.Orientation.Horizontal,
+                HorizontalAlignment = HorizontalAlignment.Right
+            };
+            var btnOk = new System.Windows.Controls.Button
+            {
+                Content = "Löschen",
+                Width = 80,
+                Margin = new Thickness(0, 0, 8, 0)
+            };
+            var btnAbbrechen = new System.Windows.Controls.Button
+            {
+                Content = "Abbrechen",
+                Width = 80
+            };
+
+            bool bestätigt = false;
+            btnOk.Click        += (s, ev) => { bestätigt = true; dlg.Close(); };
+            btnAbbrechen.Click += (s, ev) => dlg.Close();
+
+            btnPanel.Children.Add(btnOk);
+            btnPanel.Children.Add(btnAbbrechen);
+
+            stack.Children.Add(rbAlles);
+            stack.Children.Add(rbSelektiv);
+            stack.Children.Add(lblKlassen);
+            stack.Children.Add(lstKlassen);
+            stack.Children.Add(lblFächer);
+            stack.Children.Add(lstFächer);
+            stack.Children.Add(btnPanel);
+            dlg.Content = stack;
+            dlg.ShowDialog();
+
+            if (!bestätigt) return;
+
+            bool allesLöschen = rbAlles.IsChecked == true;
+
+            var gewählteKlassen = lstKlassen.SelectedItems.Cast<string>().ToHashSet();
+            var gewählteFächer  = lstFächer.SelectedItems.Cast<string>()
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            try
+            {
+                using var wb = new XLWorkbook(excelPfad);
+
+                if (!wb.Worksheets.Any(ws => ws.Name == "Fix UNrn"))
+                {
+                    MessageBox.Show("Tabelle 'Fix UNrn' nicht gefunden.");
+                    return;
+                }
+
+                var sheet = wb.Worksheet("Fix UNrn");
+                var letzteZeile = sheet.LastRowUsed()?.RowNumber() ?? 1;
+
+                if (allesLöschen)
+                {
+                    // Nur UNr-Spalten (ab Spalte 3) löschen, WTag/Stunde behalten
+                    for (int row = 2; row <= letzteZeile; row++)
+                    {
+                        var xlRow = sheet.Row(row);
+                        int lastCol = xlRow.LastCellUsed()?.Address.ColumnNumber ?? 2;
+                        for (int col = 3; col <= lastCol; col++)
+                            xlRow.Cell(col).Clear();
+                    }
+
+                    wb.Save();
+                    Log("Fix UNrn: alle UNrn gelöscht, WTag/Stunde-Spalten erhalten.");
+                    TxtStatus.Text = "Alle Fix UNrn gelöscht.";
+                    return;
+                }
+
+                // Selektiv: Lookup UNr → Block
+                var unrZuBlock = new Dictionary<int, UnterrichtsBlock>();
+                foreach (var block in input.Blocks)
+                    unrZuBlock[block.UNr] = block;
+
+                int gelöscht = 0;
+
+                for (int row = 2; row <= letzteZeile; row++)
+                {
+                    var xlRow  = sheet.Row(row);
+                    int lastCol = xlRow.LastCellUsed()?.Address.ColumnNumber ?? 2;
+
+                    var verbleibende = new List<int>();
+
+                    for (int col = 3; col <= lastCol; col++)
+                    {
+                        if (!int.TryParse(xlRow.Cell(col).GetString(), out int unr))
+                            continue;
+
+                        if (!unrZuBlock.TryGetValue(unr, out var block))
+                        {
+                            verbleibende.Add(unr);
+                            continue;
+                        }
+
+                        bool klassenTreffer = false;
+                        if (gewählteKlassen.Count > 0)
+                        {
+                            klassenTreffer = block.Teile.Any(t =>
+                            {
+                                string kombi = string.Join(", ", t.Klassen.OrderBy(k => k));
+                                return gewählteKlassen.Contains(kombi) ||
+                                       t.Klassen.Any(k => gewählteKlassen.Contains(k));
+                            });
+                        }
+
+                        bool fachTreffer = gewählteFächer.Count > 0 &&
+                            block.Teile.Any(t =>
+                                gewählteFächer.Contains(t.Fach.Trim()));
+
+                        // Löschen wenn Klasse ODER Fach passt
+                        bool löschen = klassenTreffer || fachTreffer;
+
+                        if (löschen)
+                            gelöscht++;
+                        else
+                            verbleibende.Add(unr);
+                    }
+
+                    // Zeile neu schreiben
+                    for (int col = 3; col <= lastCol; col++)
+                        xlRow.Cell(col).Clear();
+
+                    for (int i = 0; i < verbleibende.Count; i++)
+                        xlRow.Cell(3 + i).Value = verbleibende[i];
+                }
+
+                wb.Save();
+
+                string beschreibung = "";
+                if (gewählteKlassen.Count > 0) beschreibung += $"Klassen: {string.Join(", ", gewählteKlassen)} ";
+                if (gewählteFächer.Count > 0)  beschreibung += $"Fächer: {string.Join(", ", gewählteFächer)}";
+
+                Log($"Fix UNrn gelöscht ({gelöscht} Einträge): {beschreibung.Trim()}");
+                TxtStatus.Text = $"Fix UNrn gelöscht: {beschreibung.Trim()}";
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Fehler:\n" + ex.Message);
+            }
         }
 
         // =====================================================
