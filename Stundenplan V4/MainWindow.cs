@@ -114,6 +114,7 @@ namespace Stundenplan_V2
             // Diagnose-Tabelle für alle Lösungen
             try
             {
+                bool meldeMinus2 = input.VerbotMinus2Verletzungen || input.StrafeMinus2Verletzungen > 0;
                 var diagnoseDaten = letzteSolutions
                     .Select(sol => (
                         sol.label,
@@ -125,10 +126,14 @@ namespace Stundenplan_V2
                             input.StrafeHohlstunde,
                             input.StrafeDoppelHohlstunde,
                             input.StrafeDreifachHohlstunde,
-                            input.StrafeStdFolge)))
+                            input.StrafeStdFolge,
+                            meldeMinus2,
+                            input.ExtraFreieTage,
+                            input.LehrerFreiTageMinus2)))
                     .ToList();
 
-                LehrerDiagnose.Exportiere(excelPfad, diagnoseDaten);
+                LehrerDiagnose.Exportiere(excelPfad, diagnoseDaten,
+                    vorherLöschen: true, meldeLeherMinus2: meldeMinus2);
                 Log("Diagnose-Tabelle erstellt.");
             }
             catch (Exception ex)
@@ -333,11 +338,15 @@ namespace Stundenplan_V2
                     }
                 }
 
+                bool meldeMinus2 = input.VerbotMinus2Verletzungen || input.StrafeMinus2Verletzungen > 0;
                 var verletzungen = PlanValidator.Prüfe(
                     belegung,
                     input.Blocks,
                     input.Slots,
-                    input.GrossePausen);
+                    input.GrossePausen,
+                    meldeLeherMinus2: meldeMinus2,
+                    extraFreieTage: input.ExtraFreieTage,
+                    lehrerFreiTageMinus2: input.LehrerFreiTageMinus2);
 
                 PlanValidator.SchreibeTabelle(excelPfad, verletzungen);
 

@@ -40,6 +40,10 @@ public class OrToolsSolver : ISolver
             input.VerbotSpäteDoppel,
             input.HauptfachSpätAnteilProzent,
             input.StrafeHauptfachSpät,
+            input.VerbotMinus2Verletzungen,
+            input.StrafeMinus2Verletzungen,
+            input.LehrerFreiTageMinus2,
+            input.LehrerFreiTageMinus3,
             log,
             out debug
         );

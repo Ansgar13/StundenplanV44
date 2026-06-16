@@ -1,4 +1,4 @@
-﻿using ClosedXML.Excel;
+using ClosedXML.Excel;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -19,7 +19,7 @@ namespace Stundenplan_V2
             // TABELLE 1 – UNTERRICHT
             // =====================================================
 
-            var sheet1 = workbook.Worksheet("U-Verteilung");
+            var sheet1 = workbook.Worksheet("UV");
             var header1 = GetHeaderMap(sheet1);
 
             System.Diagnostics.Debug.WriteLine("=== HEADER U-Verteilung ===");
@@ -87,22 +87,17 @@ namespace Stundenplan_V2
                 string lehrer = Cell(row, header1, "Lehrer").GetString();
                 string fach = Cell(row, header1, "Fach").GetString();
                 string klassenRaw = Cell(row, header1, "Klasse(n)").GetString();
-                string dStdRaw = GetOptional(row, header1, "Dopp.Std.");
                 string ltkz = GetOptional(row, header1, "LTKZ");
                 string eWert = GetOptional(row, header1, "(E)").Trim().ToLower();
 
+                // Robuster Parser für Dopp.Std. (erkennt versehentliches Datumsformat)
                 int minD = 0;
                 int maxD = 0;
-
-                if (!string.IsNullOrWhiteSpace(dStdRaw))
+                if (header1.ContainsKey("Dopp.Std."))
                 {
-                    var teile = dStdRaw.Split('-');
-
-                    if (teile.Length == 2)
-                    {
-                        int.TryParse(teile[0], out minD);
-                        int.TryParse(teile[1], out maxD);
-                    }
+                    var (mn, mx) = ParseDoppelStd(row.Cell(header1["Dopp.Std."]));
+                    minD = mn;
+                    maxD = mx;
                 }
 
                 var klassenListe = klassenRaw
@@ -143,12 +138,29 @@ namespace Stundenplan_V2
 
                 int wst = Cell(ersteAktiveZeile, header1, "Wst").GetValue<int>();
                 string zeilentext = GetOptional(ersteAktiveZeile, header1, "ZeilenText");
+                string zeilentext2 = GetOptional(ersteAktiveZeile, header1, "ZeilenText-2");
+                string kkk = GetOptional(ersteAktiveZeile, header1, "KKK").Trim();
+
+                // U-Gruppen: erkennt "A-Woche" / "B-Woche" → "A" / "B"
+                string uGruppen = GetOptional(ersteAktiveZeile, header1, "U-Gruppen").Trim();
+                string wochenGruppe = "";
+                if (!string.IsNullOrEmpty(uGruppen))
+                {
+                    string ugUp = uGruppen.ToUpperInvariant();
+                    if (ugUp.Contains("A-WOCHE") || ugUp == "A")
+                        wochenGruppe = "A";
+                    else if (ugUp.Contains("B-WOCHE") || ugUp == "B")
+                        wochenGruppe = "B";
+                }
 
                 unterrichtListe.Add(new UnterrichtsBlock
                 {
                     UNr = uNr,
                     Wst = wst,
                     Zeilentext = zeilentext,
+                    Zeilentext2 = zeilentext2,
+                    KKK = kkk,
+                    WochenGruppe = wochenGruppe,
                     Teile = gruppe.ToList(),
                     WochenDoppelstunden = 0,
                     TagesDoppelstunden = new Dictionary<string, int>(),
@@ -160,7 +172,7 @@ namespace Stundenplan_V2
             // TABELLE 2 – ZEITRASTER
             // =====================================================
 
-            var sheet2 = workbook.Worksheet("Lösungen");
+            var sheet2 = workbook.Worksheet("Lös");
             var rows2 = sheet2.RangeUsed().RowsUsed().Skip(1);
 
             foreach (var row in rows2)
@@ -221,19 +233,27 @@ namespace Stundenplan_V2
             // ZEITWÜNSCHE
             // =====================================================
 
-            if (workbook.Worksheets.Any(ws => ws.Name == "ZeitWL"))
-                LeseZeitWunschTabelle(workbook.Worksheet("ZeitWL"), zeitRaster, true, extraFreieTage);
+            var lehrerFreiTageMinus2 = new HashSet<string>();
+            var lehrerFreiTageMinus3 = new HashSet<string>();
 
-            if (workbook.Worksheets.Any(ws => ws.Name == "ZeitWK"))
-                LeseZeitWunschTabelle(workbook.Worksheet("ZeitWK"), zeitRaster, false, extraFreieTage);
+            // Zusaetzliche freie Tage aus eigener Tabelle "FT" lesen
+            if (workbook.Worksheets.Any(ws => ws.Name == "FT"))
+                LeseFreieTageTabelle(workbook.Worksheet("FT"), extraFreieTage, lehrerFreiTageMinus2, lehrerFreiTageMinus3);
+
+            // Slot-Zeitwuensche weiterhin aus ZWL (Lehrer) / ZWK (Klassen)
+            if (workbook.Worksheets.Any(ws => ws.Name == "ZWL"))
+                LeseZeitWunschTabelle(workbook.Worksheet("ZWL"), zeitRaster, true);
+
+            if (workbook.Worksheets.Any(ws => ws.Name == "ZWK"))
+                LeseZeitWunschTabelle(workbook.Worksheet("ZWK"), zeitRaster, false);
 
             // =====================================================
             // FACHGRUPPENRÄUME
             // =====================================================
 
-            if (workbook.Worksheets.Any(ws => ws.Name == "Fachgruppenräume"))
+            if (workbook.Worksheets.Any(ws => ws.Name == "FGR"))
             {
-                var sheetFG = workbook.Worksheet("Fachgruppenräume");
+                var sheetFG = workbook.Worksheet("FGR");
 
                 foreach (var row in sheetFG.RangeUsed().RowsUsed().Skip(1))
                 {
@@ -279,13 +299,15 @@ namespace Stundenplan_V2
             int strafeEinzel = 0;
             int strafeSpäteLk = 0;
             bool verbotSpäteDoppel = false;
+            bool verbotMinus2 = false;
+            int  strafeMinus2 = 0;
             int hauptfachSpätAnteil = 50;
             int strafeHauptfachSpät = 0;
             var grossePausen = new List<(int stundeVor, int stundeNach)>();
 
-            if (workbook.Worksheets.Any(ws => ws.Name == "Parameter"))
+            if (workbook.Worksheets.Any(ws => ws.Name == "PM"))
             {
-                var sheetParam = workbook.Worksheet("Parameter");
+                var sheetParam = workbook.Worksheet("PM");
 
                 // Parameter per Beschriftung in Spalte A suchen (robuster als feste Zeilennummern)
                 foreach (var row in sheetParam.RangeUsed()?.RowsUsed() ?? Enumerable.Empty<IXLRangeRow>())
@@ -308,6 +330,12 @@ namespace Stundenplan_V2
                     }
                     else if (label.Contains("frühe"))
                         int.TryParse(wert, out gewichtFrüh);
+                    else if (label.Contains("verbot doppelstunde") || label.Contains("verbot späte dopp"))
+                        verbotSpäteDoppel = wert.Trim().ToLower() == "ja";
+                    else if (label.Contains("verbot -2") || label.Contains("verbot minus2"))
+                        verbotMinus2 = wert.Trim().ToLower() == "ja";
+                    else if (label.Contains("strafe -2") || label.Contains("strafe minus2"))
+                        int.TryParse(wert, out strafeMinus2);
                     else if (label.Contains("späte dopp") || label.Contains("strafe späte dopp"))
                         int.TryParse(wert, out gewichtSpät);
                     else if (label.Contains("pädagog") || label.Contains("päd"))
@@ -326,8 +354,6 @@ namespace Stundenplan_V2
                         int.TryParse(wert, out strafeEinzel);
                     else if (label.Contains("späte lk") || label.Contains("lk stunden") || label.Contains("zuviele späte"))
                         int.TryParse(wert, out strafeSpäteLk);
-                    else if (label.Contains("verbot doppelstunde") || label.Contains("verbot späte dopp"))
-                        verbotSpäteDoppel = wert.Trim().ToLower() == "ja";
                     else if (label.Contains("hauptfach anteil") || label.Contains("hauptfach spät anteil"))
                         int.TryParse(wert, out hauptfachSpätAnteil);
                     else if (label.Contains("strafe hauptfach") || label.Contains("hauptfach strafe"))
@@ -349,40 +375,71 @@ namespace Stundenplan_V2
             // =====================================================
             var lehrerStammdaten = new Dictionary<string, LehrerStammdaten>();
 
-            if (workbook.Worksheets.Any(ws => ws.Name == "Stammdaten"))
+            if (workbook.Worksheets.Any(ws => ws.Name == "StD"))
             {
-                var sheetSD = workbook.Worksheet("Stammdaten");
+                var sheetSD = workbook.Worksheet("StD");
                 var headerSD = GetHeaderMap(sheetSD);
 
-                foreach (var row in sheetSD.RangeUsed().RowsUsed().Skip(1))
+                // Spalten robust anhand der Ueberschrift suchen (tolerant gegen
+                // Umbenennung/Verschiebung). -1 = Spalte nicht vorhanden.
+                int colName  = FindeSpalte(headerSD, "Name");
+                int colHohl  = FindeSpalte(headerSD, "HohlStd. soll", "HohlStd soll", "Hohlstunden soll");
+                int colFolge = FindeSpalte(headerSD, "Std.Folge", "Std Folge", "Stundenfolge");
+
+                // Robuste Zeilen-Iteration: ueber den gesamten benutzten Bereich gehen
+                // und Leerzeilen UEBERSPRINGEN (nicht abbrechen). RowsUsed() kann bei
+                // einer komplett leeren Zwischenzeile vorzeitig enden -> daher per Index.
+                int letzteZeile = sheetSD.LastRowUsed()?.RowNumber() ?? 1;
+                for (int r = 2; r <= letzteZeile; r++)
                 {
-                    string name = GetOptional(row, headerSD, "Name").Trim();
-                    if (string.IsNullOrEmpty(name)) continue;
+                    var row = sheetSD.Row(r);
+                    string name = colName > 0 ? row.Cell(colName).GetString().Trim() : "";
+                    if (string.IsNullOrEmpty(name)) continue; // Leerzeile -> ueberspringen
 
                     var sd = new LehrerStammdaten { Name = name };
 
-                    // HohlStd. soll: "1-3" → min=1, max=3
-                    string hohlRaw = GetOptional(row, headerSD, "HohlStd. soll").Trim();
-                    if (!string.IsNullOrEmpty(hohlRaw))
+                    // HohlStd. soll: gemeint ist "min-max" (z.B. "1-3" -> min=1, max=3).
+                    // Empfohlenes Excel-Format: Zelle als TEXT, Wert "1-2".
+                    // ParseHohlStdSoll deckt Text + (als Fallback) Datum/Zahl ab.
+                    if (colHohl > 0)
                     {
-                        var teile = hohlRaw.Split('-');
-                        if (teile.Length == 2 &&
-                            int.TryParse(teile[0].Trim(), out int hMin) &&
-                            int.TryParse(teile[1].Trim(), out int hMax))
-                        {
-                            sd.HohlStdMin = hMin;
-                            sd.HohlStdMax = hMax;
-                        }
+                        var hohlCell = row.Cell(colHohl);
+                        if (!hohlCell.IsEmpty())
+                            ParseHohlStdSoll(hohlCell, sd);
                     }
 
-                    // Std.Folge: "6" → max 6 aufeinanderfolgende Stunden
-                    string folgeRaw = GetOptional(row, headerSD, "Std.Folge").Trim();
-                    if (!string.IsNullOrEmpty(folgeRaw) &&
-                        int.TryParse(folgeRaw, out int folge))
-                        sd.StdFolge = folge;
+                    // Std.Folge: "6" -> max 6 aufeinanderfolgende Stunden
+                    if (colFolge > 0)
+                    {
+                        string folgeRaw = row.Cell(colFolge).GetString().Trim();
+                        if (!string.IsNullOrEmpty(folgeRaw) &&
+                            int.TryParse(folgeRaw, out int folge))
+                            sd.StdFolge = folge;
+                    }
 
                     lehrerStammdaten[name] = sd;
                 }
+
+                // ===== TEMPORAERE DIAGNOSE: HohlStd-Werte pruefen =====
+                int mitMax = lehrerStammdaten.Values.Count(s => s.HohlStdMax != null);
+                int mitFolgeCnt = lehrerStammdaten.Values.Count(s => s.StdFolge != null);
+                var probe = new System.Text.StringBuilder();
+                probe.AppendLine($"[StD-DIAGNOSE] Lehrer gesamt: {lehrerStammdaten.Count}, " +
+                                 $"mit HohlStdMax: {mitMax}, mit StdFolge: {mitFolgeCnt}");
+                probe.AppendLine($"  Spalten: Name={colName}, HohlStd={colHohl}, Folge={colFolge}");
+                // Erste 5 geladene HohlStd-Werte zeigen
+                int z = 0;
+                foreach (var kv in lehrerStammdaten)
+                {
+                    if (z >= 5) break;
+                    if (kv.Value.HohlStdMax != null)
+                    {
+                        probe.AppendLine($"    {kv.Key}: min={kv.Value.HohlStdMin}, max={kv.Value.HohlStdMax}");
+                        z++;
+                    }
+                }
+                System.Windows.MessageBox.Show(probe.ToString(), "StD-Diagnose");
+                // ===== ENDE TEMPORAERE DIAGNOSE =====
             }
 
             return new StundenplanInput
@@ -408,10 +465,133 @@ namespace Stundenplan_V2
                 StrafeEinzelstunde = strafeEinzel,
                 StrafeSpäteLkStunden = strafeSpäteLk,
                 VerbotSpäteDoppel = verbotSpäteDoppel,
+                VerbotMinus2Verletzungen = verbotMinus2,
+                StrafeMinus2Verletzungen = strafeMinus2,
                 HauptfachSpätAnteilProzent = hauptfachSpätAnteil,
                 StrafeHauptfachSpät = strafeHauptfachSpät,
                 GrossePausen = grossePausen,
+                LehrerFreiTageMinus2 = lehrerFreiTageMinus2,
+                LehrerFreiTageMinus3 = lehrerFreiTageMinus3,
             };
+        }
+
+        // Parst die Zelle "HohlStd. soll" in HohlStdMin/HohlStdMax.
+        // EMPFOHLEN (Option A): Zelle als TEXT formatieren, Wert "1-2".
+        // Dann greift zuverlaessig der Text-Pfad unten.
+        // Fallback: Falls Excel den Wert doch als Datum/Zahl gespeichert hat,
+        // wird versucht, Tag/Monat zurueckzurechnen (unzuverlaessig -> nur Notbehelf).
+        private static void ParseHohlStdSoll(IXLCell cell, LehrerStammdaten sd)
+        {
+            // Bevorzugt: Text "1-2" / "0-18" (auch mit Gedankenstrich oder Leerzeichen)
+            if (cell.DataType == XLDataType.Text)
+            {
+                string raw = cell.GetString().Trim();
+                if (TryParseMinMax(raw, out int tMin, out int tMax))
+                {
+                    sd.HohlStdMin = tMin;
+                    sd.HohlStdMax = tMax;
+                }
+                return;
+            }
+
+            // Fallback 1: echtes DateTime (Excel hat "1-2" als Datum gedeutet)
+            if (cell.DataType == XLDataType.DateTime)
+            {
+                var dt = cell.GetDateTime();
+                sd.HohlStdMin = dt.Day;
+                sd.HohlStdMax = dt.Month;
+                return;
+            }
+
+            // Fallback 2: Zahl, die eine Datums-Seriennummer sein koennte
+            if (cell.DataType == XLDataType.Number)
+            {
+                double d = cell.GetDouble();
+                if (d > 59 && d < 100000)
+                {
+                    try
+                    {
+                        var dt = DateTime.FromOADate(d);
+                        sd.HohlStdMin = dt.Day;
+                        sd.HohlStdMax = dt.Month;
+                        return;
+                    }
+                    catch { }
+                }
+            }
+
+            // Letzter Versuch: ueber GetString (deckt sonstige Faelle ab)
+            if (TryParseMinMax(cell.GetString().Trim(), out int hMin, out int hMax))
+            {
+                sd.HohlStdMin = hMin;
+                sd.HohlStdMax = hMax;
+            }
+        }
+
+        // Parst "1-2", "0-18", "1 - 2", "1–2" (Gedankenstrich) in (min, max).
+        private static bool TryParseMinMax(string raw, out int min, out int max)
+        {
+            min = max = 0;
+            if (string.IsNullOrEmpty(raw)) return false;
+            var teile = raw.Split('-', '\u2013', '\u2014');
+            if (teile.Length == 2 &&
+                int.TryParse(teile[0].Trim(), out min) &&
+                int.TryParse(teile[1].Trim(), out max))
+                return true;
+            return false;
+        }
+
+        // =====================================================
+        // FT-TABELLE (zusaetzliche freie Tage)
+        // Spalte A = Name, B = Anzahl zusaetzliche FT, C = Gewichtung (-2 / -3)
+        // Eigene Tabelle "FT" (zeilenweise, ein Lehrer pro Zeile).
+        // =====================================================
+        private static void LeseFreieTageTabelle(
+            IXLWorksheet sheet,
+            Dictionary<string, int> extraFreieTage,
+            HashSet<string> lehrerFreiTageMinus2,
+            HashSet<string> lehrerFreiTageMinus3)
+        {
+            int row = 2; // Zeile 1 ist Kopfzeile (Name | Anzahl | Gewichtung)
+
+            while (!sheet.Cell(row, 1).IsEmpty())
+            {
+                string name = sheet.Cell(row, 1).GetString().Trim();
+
+                // Platzhalter-/Leernamen ueberspringen
+                if (string.IsNullOrWhiteSpace(name) || name == "0")
+                {
+                    row++;
+                    continue;
+                }
+
+                int extra = 0;
+                var extraCell = sheet.Cell(row, 2);
+                if (!extraCell.IsEmpty())
+                    int.TryParse(extraCell.GetString(), out extra);
+
+                // Spalte C: -3 -> zwingend, -2 -> -2-Wunsch, sonst/leer -> ignorieren
+                var markerCell = sheet.Cell(row, 3);
+                int marker = 0;
+                bool hatMarker = !markerCell.IsEmpty() &&
+                                 int.TryParse(markerCell.GetString(), out marker);
+
+                if (extra > 0 && hatMarker && marker == -3)
+                {
+                    if (!extraFreieTage.ContainsKey(name))
+                        extraFreieTage[name] = extra;
+                    lehrerFreiTageMinus3?.Add(name);
+                }
+                else if (extra > 0 && hatMarker && marker == -2)
+                {
+                    if (!extraFreieTage.ContainsKey(name))
+                        extraFreieTage[name] = extra;
+                    lehrerFreiTageMinus2?.Add(name);
+                }
+                // sonst: unmarkiert oder extra<=0 -> ignorieren
+
+                row++;
+            }
         }
 
         // =====================================================
@@ -421,8 +601,7 @@ namespace Stundenplan_V2
         private static void LeseZeitWunschTabelle(
             IXLWorksheet sheet,
             List<ZeitSlot> zeitRaster,
-            bool istLehrer,
-            Dictionary<string, int> extraFreieTage)
+            bool istLehrer)
         {
             int row = 1;
 
@@ -430,18 +609,9 @@ namespace Stundenplan_V2
             {
                 string name = sheet.Cell(row, 1).GetString().Trim();
 
-                int extra = 0;
-
-                var extraCell = sheet.Cell(row, 2);
-
-                if (!extraCell.IsEmpty())
-                    int.TryParse(extraCell.GetString(), out extra);
-
-                if (istLehrer && extra > 0)
-                {
-                    if (!extraFreieTage.ContainsKey(name))
-                        extraFreieTage[name] = extra;
-                }
+                // Hinweis: Die zusaetzlichen freien Tage werden NICHT mehr hier,
+                // sondern aus der eigenen Tabelle "FT" gelesen (LeseFreieTageTabelle).
+                // Diese Methode liest nur noch die Slot-Zeitwuensche (11x5-Raster).
 
                 row += 2;
 
@@ -521,20 +691,103 @@ namespace Stundenplan_V2
         }
         private static Dictionary<string, int> GetHeaderMap(IXLWorksheet sheet)
         {
+            var map = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             var headerRow = sheet.Row(1);
 
-            return headerRow.CellsUsed()
-                .ToDictionary(
-                    c => c.GetString().Trim(),
-                    c => c.Address.ColumnNumber,
-                    StringComparer.OrdinalIgnoreCase);
+            // Ueber ALLE Spalten der Kopfzeile iterieren (nicht nur CellsUsed),
+            // damit die Spaltennummern absolut und zuverlaessig zugeordnet werden.
+            int letzteSpalte = headerRow.LastCellUsed()?.Address.ColumnNumber ?? 0;
+            for (int col = 1; col <= letzteSpalte; col++)
+            {
+                string text = sheet.Cell(1, col).GetString().Trim();
+                if (string.IsNullOrEmpty(text)) continue;
+                // Bei doppelten Ueberschriften gewinnt die erste (nicht ueberschreiben).
+                if (!map.ContainsKey(text))
+                    map[text] = col;
+            }
+            return map;
         }
+
+        // Sucht die Spaltennummer zu einem Header robust:
+        //   1) exakter Treffer (Gross/Klein egal)
+        //   2) Treffer, der den gesuchten Text enthaelt oder umgekehrt
+        //      (toleriert kleine Abweichungen wie zusaetzliche Leerzeichen/Zeichen).
+        // Gibt -1 zurueck, wenn nichts gefunden wird.
+        private static int FindeSpalte(Dictionary<string, int> map, params string[] namen)
+        {
+            // 1) exakter Treffer
+            foreach (var name in namen)
+                if (map.TryGetValue(name, out int c))
+                    return c;
+
+            // 2) flexibler Treffer: normalisiert (ohne Leerzeichen, klein) vergleichen
+            string Norm(string s) => new string(s.Where(ch => !char.IsWhiteSpace(ch)).ToArray()).ToLowerInvariant();
+            foreach (var name in namen)
+            {
+                string ziel = Norm(name);
+                foreach (var kv in map)
+                {
+                    string kandidat = Norm(kv.Key);
+                    if (kandidat == ziel || kandidat.Contains(ziel) || ziel.Contains(kandidat))
+                        return kv.Value;
+                }
+            }
+            return -1;
+        }
+
         private static IXLCell Cell(IXLRangeRow row, Dictionary<string, int> map, string name)
         {
             if (!map.ContainsKey(name))
                 throw new Exception($"Spalte '{name}' nicht gefunden.");
 
             return row.Cell(map[name]);
+        }
+
+        // =====================================================
+        // HELPER: parst "Dopp.Std."-Zelle robust.
+        // Erkennt versehentliches Datumsformat (Excel deutet
+        // z.B. "1-2" oft als 02.01. oder 01.02. um).
+        // Akzeptiert: "1-2", "0-3", einzelne Zahl "2",
+        // und DateTime-Zellen.
+        // =====================================================
+        private static (int min, int max) ParseDoppelStd(IXLCell cell)
+        {
+            if (cell == null || cell.IsEmpty())
+                return (0, 0);
+
+            // Fall 1: Excel hat den Eintrag als Datum interpretiert
+            if (cell.DataType == XLDataType.DateTime)
+            {
+                var dt = cell.GetDateTime();
+                int a = dt.Day;
+                int b = dt.Month;
+                return (System.Math.Min(a, b), System.Math.Max(a, b));
+            }
+
+            // Fall 2: Zahl-Zelle (z.B. "2" als Number)
+            if (cell.DataType == XLDataType.Number)
+            {
+                int v = (int)cell.GetDouble();
+                return (v, v);
+            }
+
+            // Fall 3: Text-Zelle
+            string raw = cell.GetString().Trim();
+            if (string.IsNullOrEmpty(raw))
+                return (0, 0);
+
+            // "min-max"
+            var teile = raw.Split('-');
+            if (teile.Length == 2 &&
+                int.TryParse(teile[0].Trim(), out int mn) &&
+                int.TryParse(teile[1].Trim(), out int mx))
+                return (mn, mx);
+
+            // Einzelne Zahl "2"
+            if (int.TryParse(raw, out int single))
+                return (single, single);
+
+            return (0, 0);
         }
     }
 }

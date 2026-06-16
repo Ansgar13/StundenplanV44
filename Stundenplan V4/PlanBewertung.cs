@@ -41,7 +41,8 @@ namespace Stundenplan_V2
             int strafeEinzel = 0,
             int strafeSpäteLk = 0,
             int strafeHauptfachSpät = 0,
-            int hauptfachSpätAnteilProzent = 50)
+            int hauptfachSpätAnteilProzent = 50,
+            Dictionary<string, LehrerStammdaten> lehrerStammdaten = null)
         {
             var result = new BewertungsResultat();
             int B = blocks.Count;
@@ -127,6 +128,10 @@ namespace Stundenplan_V2
                     .Where(b => blocks[b].Teile.Any(t => t.Lehrer == lehrer))
                     .ToList();
 
+                // Hohlstunden dieses Lehrers ueber die ganze Woche sammeln,
+                // damit der Wochen-Freibetrag (HohlStdMax) abgezogen werden kann.
+                int hohlWoche = 0;
+
                 foreach (var tag in tage)
                 {
                     var tagesSlots = Enumerable.Range(0, S)
@@ -160,7 +165,7 @@ namespace Stundenplan_V2
 
                         if (!hatUnterricht && !istLetzte)
                         {
-                            result.Hohlstunden++;
+                            hohlWoche++;            // pro Lehrer sammeln statt direkt global
                             hohlFolge++;
                         }
                         else
@@ -171,6 +176,15 @@ namespace Stundenplan_V2
                         }
                     }
                 }
+
+                // Wochen-Freibetrag abziehen (StD: HohlStdMax). Kein Limit -> 0.
+                int freibetrag = 0;
+                if (lehrerStammdaten != null &&
+                    lehrerStammdaten.TryGetValue(lehrer, out var sd) && sd?.HohlStdMax != null)
+                    freibetrag = sd.HohlStdMax.Value;
+
+                int hohlÜberschuss = Math.Max(0, hohlWoche - freibetrag);
+                result.Hohlstunden += hohlÜberschuss;
             }
 
             // -------------------------------------------------

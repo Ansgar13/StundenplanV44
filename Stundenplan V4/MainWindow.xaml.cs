@@ -16,7 +16,7 @@ namespace Stundenplan_V2
         private readonly StundenplanService service =
             new StundenplanService(new OrToolsSolver());
 
-        // label = "OhneTausch_1", "OhneTausch_2", "Tausch_5+7_1" usw.
+        // label = "oT_1", "oT_2", "T_5+7_1" usw.
         // blocks = die für diese Lösung gültigen Blöcke (ggf. mit getauschten Lehrern)
         private List<(int quality, int badUnits, int[,] belegung, string label, List<UnterrichtsBlock> blocks)> letzteSolutions = new();
 
@@ -75,6 +75,11 @@ namespace Stundenplan_V2
             {
                 excelPfad = dlg.FileName;
                 input = ExcelLoader.Lade(excelPfad);
+                // In-Memory-Lösungen leeren: nach dem Neuladen gelten nur noch
+                // die Lösungen, die tatsächlich in der Excel-Datei stehen.
+                // Sonst würden zuvor manuell geloeschte Lösungen aus dem Speicher
+                // beim nächsten Übernehmen/Schreiben wieder in die Datei zurückgeschrieben.
+                letzteSolutions = new();
                 TxtStatus.Text = "Excel erfolgreich eingelesen.";
             }
         }
@@ -146,6 +151,7 @@ namespace Stundenplan_V2
             // Diagnose-Tabelle für alle Lösungen
             try
             {
+                bool meldeMinus2 = input.VerbotMinus2Verletzungen || input.StrafeMinus2Verletzungen > 0;
                 var diagnoseDaten = letzteSolutions
                     .Select(sol => (
                         sol.label,
@@ -157,10 +163,20 @@ namespace Stundenplan_V2
                             input.StrafeHohlstunde,
                             input.StrafeDoppelHohlstunde,
                             input.StrafeDreifachHohlstunde,
-                            input.StrafeStdFolge)))
+                            input.StrafeStdFolge,
+                            meldeMinus2,
+                            input.ExtraFreieTage,
+                            input.LehrerFreiTageMinus2)))
                     .ToList();
 
-                LehrerDiagnose.Exportiere(excelPfad, diagnoseDaten);
+                LehrerDiagnose.Exportiere(excelPfad, diagnoseDaten, vorherLöschen: true, meldeLeherMinus2: meldeMinus2);
+
+                // Dstd-F: Doppelstunden-Verletzungen je Lehrer / UNr
+                var dstdFDaten = letzteSolutions
+                    .Select(sol => (sol.label, sol.belegung, sol.blocks))
+                    .ToList();
+                LehrerDiagnose.ExportiereDstdF(excelPfad, dstdFDaten, input.Slots, vorherLöschen: true);
+
                 Log("Diagnose-Tabelle erstellt.");
             }
             catch (Exception ex)
@@ -183,7 +199,7 @@ namespace Stundenplan_V2
             }
 
             // UNrPlan in letzteSolutions laden falls noch nicht vorhanden
-            if (!letzteSolutions.Any(s => s.label == "UNrPlan"))
+            if (!letzteSolutions.Any(s => s.label == "Plan"))
                 BtnUnrPlan_Click(null, null);
 
             var verfügbareLösungen = letzteSolutions.Count > 0
@@ -197,7 +213,7 @@ namespace Stundenplan_V2
                 return;
             }
 
-            LöscheAlteSheets(excelPfad, "Lehrerpläne_");
+            LöscheAlteSheets(excelPfad, "LP_");
 
             foreach (var sol in verfügbareLösungen)
             {
@@ -220,7 +236,7 @@ namespace Stundenplan_V2
             }
 
             // UNrPlan in letzteSolutions laden falls noch nicht vorhanden
-            if (!letzteSolutions.Any(s => s.label == "UNrPlan"))
+            if (!letzteSolutions.Any(s => s.label == "Plan"))
                 BtnUnrPlan_Click(null, null);
 
             var verfügbareLösungen = letzteSolutions.Count > 0
@@ -234,7 +250,7 @@ namespace Stundenplan_V2
                 return;
             }
 
-            LöscheAlteSheets(excelPfad, "Klassenpläne_");
+            LöscheAlteSheets(excelPfad, "KP_");
 
             foreach (var sol in verfügbareLösungen)
             {
@@ -257,7 +273,7 @@ namespace Stundenplan_V2
             }
 
             // UNrPlan in letzteSolutions laden falls noch nicht vorhanden
-            if (!letzteSolutions.Any(s => s.label == "UNrPlan"))
+            if (!letzteSolutions.Any(s => s.label == "Plan"))
                 BtnUnrPlan_Click(null, null);
 
             var verfügbareLösungen = letzteSolutions.Count > 0
@@ -274,7 +290,7 @@ namespace Stundenplan_V2
             var oberstufenFilter = new HashSet<string>(
                 StringComparer.OrdinalIgnoreCase) { "EF", "Q1", "Q2" };
 
-            LöscheAlteSheets(excelPfad, "Klassenpläne_");
+            LöscheAlteSheets(excelPfad, "KP_");
 
             foreach (var sol in verfügbareLösungen)
             {
@@ -323,12 +339,13 @@ namespace Stundenplan_V2
                     input.StrafeEinzelstunde,
                     input.StrafeSpäteLkStunden,
                     input.StrafeHauptfachSpät,
-                    input.HauptfachSpätAnteilProzent);
+                    input.HauptfachSpätAnteilProzent,
+                    input.LehrerStammdaten);
 
-                var unrPlan = (bewertung.Quality, bewertung.BadUnits, belegung, "UNrPlan", input.Blocks);
+                var unrPlan = (bewertung.Quality, bewertung.BadUnits, belegung, "Plan", input.Blocks);
 
                 // In letzteSolutions eintragen (alte UNrPlan-Einträge ersetzen)
-                letzteSolutions.RemoveAll(s => s.label == "UNrPlan");
+                letzteSolutions.RemoveAll(s => s.label == "Plan");
                 letzteSolutions.Add(unrPlan);
 
                 // In Lösungen-Tabelle eintragen
@@ -338,6 +355,7 @@ namespace Stundenplan_V2
                 // Diagnose-Tabelle aktualisieren inkl. UNrPlan
                 try
                 {
+                    bool meldeMinus2 = input.VerbotMinus2Verletzungen || input.StrafeMinus2Verletzungen > 0;
                     var diagnoseDaten = letzteSolutions
                         .Select(sol => (
                             sol.label,
@@ -349,9 +367,19 @@ namespace Stundenplan_V2
                                 input.StrafeHohlstunde,
                                 input.StrafeDoppelHohlstunde,
                                 input.StrafeDreifachHohlstunde,
-                                input.StrafeStdFolge)))
+                                input.StrafeStdFolge,
+                                meldeMinus2,
+                                input.ExtraFreieTage,
+                                input.LehrerFreiTageMinus2)))
                         .ToList();
-                    LehrerDiagnose.Exportiere(excelPfad, diagnoseDaten);
+                    LehrerDiagnose.Exportiere(excelPfad, diagnoseDaten,
+                        vorherLöschen: true, meldeLeherMinus2: meldeMinus2);
+
+                    // Dstd-F: Doppelstunden-Verletzungen je Lehrer / UNr
+                    var dstdFDaten6 = letzteSolutions
+                        .Select(sol => (sol.label, sol.belegung, sol.blocks))
+                        .ToList();
+                    LehrerDiagnose.ExportiereDstdF(excelPfad, dstdFDaten6, input.Slots, vorherLöschen: true);
                 }
                 catch { /* Diagnose-Fehler ignorieren */ }
 
@@ -383,21 +411,22 @@ namespace Stundenplan_V2
 
             try
             {
-                // Belegung immer aus UNrPlan lesen – erst aus letzteSolutions, dann aus Excel
+                // Belegung immer aus UNrPlan lesen
+                // Reihenfolge: 1) "Plan"-Sheet (immer frisch),
+                //              2) "Plan"-Spalte in "Lös"-Sheet,
+                //              3) Cache in letzteSolutions
                 int[,] belegung = null;
 
-                // UNrPlan aus letzteSolutions suchen
-                var unrPlanSol = letzteSolutions.FirstOrDefault(s => s.label == "UNrPlan");
-                if (unrPlanSol.belegung != null)
+                belegung = LadeUnrPlanAusExcel();
+                if (belegung == null)
                 {
-                    belegung = unrPlanSol.belegung;
-                }
-                else
-                {
-                    // Aus Excel lesen
                     belegung = LadeUnrPlanAusLösungsTabelle();
                     if (belegung == null)
-                        belegung = LadeUnrPlanAusExcel();
+                    {
+                        var unrPlanSol = letzteSolutions.FirstOrDefault(s => s.label == "Plan");
+                        if (unrPlanSol.belegung != null)
+                            belegung = unrPlanSol.belegung;
+                    }
                     if (belegung == null)
                     {
                         MessageBox.Show("Kein UNr-Plan gefunden. Bitte zuerst UNr-Plan erzeugen (Button 6) " +
@@ -406,11 +435,16 @@ namespace Stundenplan_V2
                     }
                 }
 
+                bool meldeMinus2Verl = input.VerbotMinus2Verletzungen || input.StrafeMinus2Verletzungen > 0;
                 var verletzungen = PlanValidator.Prüfe(
                     belegung,
                     input.Blocks,
                     input.Slots,
-                    input.GrossePausen);
+                    input.GrossePausen,
+                    meldeLeherMinus2: meldeMinus2Verl,
+                    extraFreieTage: input.ExtraFreieTage,
+                    lehrerFreiTageMinus2: input.LehrerFreiTageMinus2,
+                    lehrerFreiTageMinus3: input.LehrerFreiTageMinus3);
 
                 PlanValidator.SchreibeTabelle(excelPfad, verletzungen);
 
@@ -481,7 +515,7 @@ namespace Stundenplan_V2
                 }
 
                 string neuesLabel = alsNeu
-                    ? gewählteLösung.label + "_verbessert"
+                    ? gewählteLösung.label + "v"
                     : gewählteLösung.label;
 
                 var verbesserteLösung = (
@@ -507,6 +541,37 @@ namespace Stundenplan_V2
                 SchreibeInExcel(letzteSolutions);
                 SchreibeRanking(letzteSolutions);
 
+                // Diagnose-Tabelle um verbesserte Lösung erweitern (anhängend)
+                try
+                {
+                    bool meldeMinus2 = input.VerbotMinus2Verletzungen || input.StrafeMinus2Verletzungen > 0;
+                    var diagnoseDaten = letzteSolutions
+                        .Select(sol => (
+                            sol.label,
+                            LehrerDiagnose.Berechne(
+                                sol.belegung,
+                                sol.blocks,
+                                input.Slots,
+                                input.LehrerStammdaten,
+                                input.StrafeHohlstunde,
+                                input.StrafeDoppelHohlstunde,
+                                input.StrafeDreifachHohlstunde,
+                                input.StrafeStdFolge,
+                                meldeMinus2,
+                                input.ExtraFreieTage,
+                                input.LehrerFreiTageMinus2)))
+                        .ToList();
+                    LehrerDiagnose.Exportiere(excelPfad, diagnoseDaten,
+                        vorherLöschen: true, meldeLeherMinus2: meldeMinus2);
+
+                    // Dstd-F: Doppelstunden-Verletzungen je Lehrer / UNr
+                    var dstdFDaten9 = letzteSolutions
+                        .Select(sol => (sol.label, sol.belegung, sol.blocks))
+                        .ToList();
+                    LehrerDiagnose.ExportiereDstdF(excelPfad, dstdFDaten9, input.Slots, vorherLöschen: true);
+                }
+                catch { /* Diagnose-Fehler ignorieren */ }
+
                 Log($"✓ Verbesserung abgeschlossen: {ergebnis.AusgangsQualität} → {ergebnis.EndQualität} " +
                     $"(+{ergebnis.Verbesserung})");
                 TxtStatus.Text = $"Plan verbessert: Qualität {ergebnis.AusgangsQualität} → {ergebnis.EndQualität}";
@@ -521,10 +586,10 @@ namespace Stundenplan_V2
         private int[,] LadeUnrPlanAusLösungsTabelle()
         {
             using var wb = new XLWorkbook(excelPfad);
-            if (!wb.Worksheets.Any(ws => ws.Name == "Lösungen"))
+            if (!wb.Worksheets.Any(ws => ws.Name == "Lös"))
                 return null;
 
-            var sheet = wb.Worksheet("Lösungen");
+            var sheet = wb.Worksheet("Lös");
             var headerRow = sheet.Row(1);
 
             // UNrPlan-Spalte suchen
@@ -532,7 +597,7 @@ namespace Stundenplan_V2
             int unrPlanCol = -1;
             for (int col = 3; col <= maxCol; col++)
             {
-                if (headerRow.Cell(col).GetString().Trim() == "UNrPlan")
+                if (headerRow.Cell(col).GetString().Trim() == "Plan")
                 {
                     unrPlanCol = col;
                     break;
@@ -686,7 +751,7 @@ namespace Stundenplan_V2
 
         // =====================================================
         // LÖSUNGEN AUS EXCEL-TABELLE LESEN
-        // Liest alle Lösungs-Spalten aus der "Lösungen"-Tabelle
+        // Liest alle Lösungs-Spalten aus der "Lös"-Tabelle
         // =====================================================
         private List<(int quality, int badUnits, int[,] belegung, string label, List<UnterrichtsBlock> blocks)>
             LadeLösungenAusExcel()
@@ -694,10 +759,10 @@ namespace Stundenplan_V2
             var result = new List<(int, int, int[,], string, List<UnterrichtsBlock>)>();
 
             using var wb = new XLWorkbook(excelPfad);
-            if (!wb.Worksheets.Any(ws => ws.Name == "Lösungen"))
+            if (!wb.Worksheets.Any(ws => ws.Name == "Lös"))
                 return result;
 
-            var sheet = wb.Worksheet("Lösungen");
+            var sheet = wb.Worksheet("Lös");
             var headerRow = sheet.Row(1);
 
             // Spaltennamen lesen (ab Spalte 3)
@@ -846,7 +911,15 @@ namespace Stundenplan_V2
             List<(int quality, int badUnits, int[,] belegung, string label, List<UnterrichtsBlock> blocks)> solutions)
         {
             using var workbook = new XLWorkbook(excelPfad);
-            var sheet = workbook.Worksheet("Lösungen");
+            var sheet = workbook.Worksheet("Lös");
+
+            // Alle alten Lösungs-Spalten (ab Spalte 3) vollständig leeren,
+            // damit manuell oder programmatisch entfernte Lösungen nicht als
+            // Altreste stehenbleiben und beim Laden wieder auftauchen.
+            int altLastCol = sheet.LastColumnUsed()?.ColumnNumber() ?? 2;
+            int altLastRow = sheet.LastRowUsed()?.RowNumber() ?? 1;
+            if (altLastCol >= 3 && altLastRow >= 1)
+                sheet.Range(1, 3, altLastRow, altLastCol).Clear(XLClearOptions.All);
 
             sheet.Cell(1, 1).Value = "WTag";
             sheet.Cell(1, 2).Value = "Stunde";
@@ -886,10 +959,10 @@ namespace Stundenplan_V2
         {
             using var workbook = new XLWorkbook(excelPfad);
 
-            if (workbook.Worksheets.Any(ws => ws.Name == "SolverRanking"))
-                workbook.Worksheet("SolverRanking").Delete();
+            if (workbook.Worksheets.Any(ws => ws.Name == "Rang"))
+                workbook.Worksheet("Rang").Delete();
 
-            var sheet = workbook.Worksheets.Add("SolverRanking");
+            var sheet = workbook.Worksheets.Add("Rang");
 
             sheet.Cell(1, 1).Value  = "Plan";
             sheet.Cell(1, 2).Value  = "Label";
@@ -921,7 +994,8 @@ namespace Stundenplan_V2
                     input.StrafeEinzelstunde,
                     input.StrafeSpäteLkStunden,
                     input.StrafeHauptfachSpät,
-                    input.HauptfachSpätAnteilProzent);
+                    input.HauptfachSpätAnteilProzent,
+                    input.LehrerStammdaten);
 
                 sheet.Cell(p + 2, 1).Value  = p + 1;
                 sheet.Cell(p + 2, 2).Value  = solutions[p].label;
@@ -954,23 +1028,48 @@ namespace Stundenplan_V2
 
             using var wb = new XLWorkbook(excelPfad);
 
-            if (!wb.Worksheets.Any(ws => ws.Name == "Unr-Plan"))
+            if (!wb.Worksheets.Any(ws => ws.Name == "Plan"))
                 return null;
 
-            var sheet = wb.Worksheet("Unr-Plan");
+            var sheet = wb.Worksheet("Plan");
 
+            // Slot-Lookup über WTag+Stunde (robust gegen Reihenfolge-Mismatch)
+            var slotLookup = new Dictionary<string, int>();
             for (int s = 0; s < S; s++)
+                slotLookup[$"{input.Slots[s].WTag}_{input.Slots[s].Stunde}"] = s;
+
+            // UNr → Block-Indizes (eine UNr kann theoretisch mehreren Blöcken zugeordnet sein)
+            var unrZuIdx = new Dictionary<int, List<int>>();
+            for (int b = 0; b < B; b++)
             {
+                int unr = input.Blocks[b].UNr;
+                if (!unrZuIdx.ContainsKey(unr))
+                    unrZuIdx[unr] = new List<int>();
+                unrZuIdx[unr].Add(b);
+            }
+
+            int lastRow = sheet.LastRowUsed()?.RowNumber() ?? 1;
+            for (int row = 2; row <= lastRow; row++)
+            {
+                string wtag = sheet.Cell(row, 1).GetString().Trim();
+                if (!int.TryParse(sheet.Cell(row, 2).GetString(), out int stunde))
+                    continue;
+                if (!slotLookup.TryGetValue($"{wtag}_{stunde}", out int sIdx))
+                    continue;
+
                 int col = 3;
                 while (true)
                 {
-                    var cell = sheet.Cell(s + 2, col);
+                    var cell = sheet.Cell(row, col);
                     if (cell.IsEmpty()) break;
 
-                    int unr = cell.GetValue<int>();
-                    for (int b = 0; b < input.Blocks.Count; b++)
-                        if (input.Blocks[b].UNr == unr)
-                            belegung[b, s] = 1;
+                    // Robust: GetString + TryParse statt GetValue<int> (verhindert Cast-Fehler bei Text-Zellen)
+                    string raw = cell.GetString().Trim();
+                    if (!int.TryParse(raw, out int unr)) { col++; continue; }
+
+                    if (unrZuIdx.TryGetValue(unr, out var bList))
+                        foreach (int b in bList)
+                            belegung[b, sIdx] = 1;
 
                     col++;
                 }
@@ -993,8 +1092,636 @@ namespace Stundenplan_V2
                 input.StrafeEinzelstunde,
                 input.StrafeSpäteLkStunden,
                 input.StrafeHauptfachSpät,
-                input.HauptfachSpätAnteilProzent);
-            return (b.Quality, b.BadUnits, belegung, "UNrPlan", input.Blocks);
+                input.HauptfachSpätAnteilProzent,
+                input.LehrerStammdaten);
+            return (b.Quality, b.BadUnits, belegung, "Plan", input.Blocks);
+        }
+
+        // =====================================================
+        // BUTTON – PLAN-EDITOR (interaktiv)
+        // =====================================================
+        private void BtnPlanEditor_Click(object sender, RoutedEventArgs e)
+        {
+            if (input == null)
+            {
+                MessageBox.Show("Bitte zuerst Excel-Datei laden (Button 2).");
+                return;
+            }
+
+            // Lösungen: bevorzugt aus dem Speicher, sonst aus dem "Lös"-Sheet laden
+            var quelleLösungen = letzteSolutions.Count > 0
+                ? letzteSolutions
+                : LadeLösungenAusExcel();
+
+            if (quelleLösungen == null || quelleLösungen.Count == 0)
+            {
+                MessageBox.Show("Keine Lösungen vorhanden — bitte zuerst Stundenplan erstellen (Button 3) " +
+                                "oder Lösungen im 'Lös'-Sheet vorhanden.");
+                return;
+            }
+
+            // Falls die Lösungen aus Excel geladen wurden, in letzteSolutions übernehmen,
+            // damit das Übernehmen-Callback konsistent darauf aufbaut.
+            if (letzteSolutions.Count == 0)
+                letzteSolutions = quelleLösungen.ToList();
+
+            // Lösungen für den Editor aufbereiten (label, belegung-Kopie, blocks)
+            var loesungenFürEditor = quelleLösungen
+                .Select(s => (s.label, (int[,])s.belegung.Clone(), s.blocks))
+                .ToList();
+
+            // Callback: editierte Lösung übernehmen → letzteSolutions + Lös + Diag
+            Action<string, int[,], List<UnterrichtsBlock>> uebernehmen =
+                (neuLabel, belegung, blocks) =>
+            {
+                var bewertung = PlanBewertung.Berechne(
+                    belegung, blocks, input.Slots,
+                    input.GewichtFrüheDoppel,
+                    input.GewichtSpäteDoppel,
+                    input.GewichtSpätePädEinheiten,
+                    input.StrafeHohlstunde,
+                    input.StrafeDoppelHohlstunde,
+                    input.StrafeDreifachHohlstunde,
+                    input.StrafeEinzelstunde,
+                    input.StrafeSpäteLkStunden,
+                    input.StrafeHauptfachSpät,
+                    input.HauptfachSpätAnteilProzent,
+                    input.LehrerStammdaten);
+
+                // In letzteSolutions ergänzen (bestehende mit gleichem Label ersetzen)
+                letzteSolutions.RemoveAll(s => s.label == neuLabel);
+                letzteSolutions.Add((bewertung.Quality, bewertung.BadUnits, belegung, neuLabel, blocks));
+
+                // Lös-Sheet neu schreiben
+                SchreibeInExcel(letzteSolutions);
+                SchreibeRanking(letzteSolutions);
+
+                // Diagnose anhängen (nur für die neue Lösung)
+                try
+                {
+                    bool meldeMinus2 = input.VerbotMinus2Verletzungen || input.StrafeMinus2Verletzungen > 0;
+                    var diagnoseDaten = new List<(string, List<LehrerDiagnoseErgebnis>)>
+                    {
+                        (neuLabel,
+                         LehrerDiagnose.Berechne(
+                            belegung, blocks, input.Slots,
+                            input.LehrerStammdaten,
+                            input.StrafeHohlstunde,
+                            input.StrafeDoppelHohlstunde,
+                            input.StrafeDreifachHohlstunde,
+                            input.StrafeStdFolge,
+                            meldeMinus2,
+                            input.ExtraFreieTage,
+                            input.LehrerFreiTageMinus2))
+                    };
+                    LehrerDiagnose.Exportiere(excelPfad, diagnoseDaten, vorherLöschen: false, meldeLeherMinus2: meldeMinus2);
+
+                    // Dstd-F: nur die neu hinzugefügte Lösung anhängen
+                    LehrerDiagnose.ExportiereDstdF(
+                        excelPfad,
+                        new List<(string, int[,], List<UnterrichtsBlock>)> { (neuLabel, belegung, blocks) },
+                        input.Slots,
+                        vorherLöschen: false);
+                }
+                catch (Exception ex)
+                {
+                    Log($"Diagnose für '{neuLabel}' fehlgeschlagen: {ex.Message}");
+                }
+
+                Log($"Plan-Editor: Lösung '{neuLabel}' übernommen (Qualität={bewertung.Quality}).");
+            };
+
+            var bewParam = new PlanEditorDialog.BewertungsParameter
+            {
+                GewichtFrüh = input.GewichtFrüheDoppel,
+                GewichtSpät = input.GewichtSpäteDoppel,
+                GewichtPäd = input.GewichtSpätePädEinheiten,
+                StrafeHohl = input.StrafeHohlstunde,
+                StrafeDoppelHohl = input.StrafeDoppelHohlstunde,
+                StrafeDreifachHohl = input.StrafeDreifachHohlstunde,
+                StrafeEinzel = input.StrafeEinzelstunde,
+                StrafeSpäteLk = input.StrafeSpäteLkStunden,
+                StrafeHauptfachSpät = input.StrafeHauptfachSpät,
+                HauptfachSpätAnteil = input.HauptfachSpätAnteilProzent,
+                StrafeStdFolge = input.StrafeStdFolge,
+                LehrerStammdaten = input.LehrerStammdaten,
+                ExtraFreieTage = input.ExtraFreieTage,
+                LehrerFreiTageMinus2 = input.LehrerFreiTageMinus2,
+                LehrerFreiTageMinus3 = input.LehrerFreiTageMinus3,
+                VerbotMinus2 = input.VerbotMinus2Verletzungen,
+                MeldeMinus2 = input.VerbotMinus2Verletzungen || input.StrafeMinus2Verletzungen > 0
+            };
+
+            var editor = new PlanEditorDialog(
+                loesungenFürEditor,
+                input.Slots,
+                input.Fachraeume,
+                input.GrossePausen,
+                uebernehmen,
+                bewParam)
+            { Owner = this };
+
+            editor.ShowDialog();
+        }
+
+        // =====================================================
+        // BUTTON – GEZIELT IGNORIEREN
+        // =====================================================
+        private void BtnIgnorieren_Click(object sender, RoutedEventArgs e)
+        {
+            if (input == null)
+            {
+                MessageBox.Show("Bitte zuerst Excel-Datei laden (Button 2).");
+                return;
+            }
+
+            // Auswahl-Listen direkt aus UV lesen (inkl. ignorierter Zeilen),
+            // damit auch komplett ignorierte Klassen/Lehrer in der Auswahl erscheinen
+            var (alleKlassen, alleLehrer, alleFächer, alleZeilentext2) = LeseFilterListenAusUV();
+
+            // Dialog
+            var dialog = new IgnoreDialog(alleKlassen, alleLehrer, alleFächer, alleZeilentext2)
+                { Owner = this };
+            if (dialog.ShowDialog() != true) return;
+
+            var fKlassen = new HashSet<string>(dialog.GewählteKlassen);
+            var fLehrer  = new HashSet<string>(dialog.GewählteLehrer);
+            var fFächer  = new HashSet<string>(dialog.GewählteFächer);
+            var fZt2     = new HashSet<string>(dialog.GewählteZeilentext2);
+
+            // Excel öffnen, prüfen, markieren
+            int markiert = 0;
+            try
+            {
+                using var wb = new ClosedXML.Excel.XLWorkbook(excelPfad);
+                var sheet = wb.Worksheet("UV");
+                var headerRow = sheet.Row(1);
+
+                int colLehrer = -1, colFach = -1, colKlassen = -1, colIgnore = -1, colZt2Local = -1;
+                foreach (var c in headerRow.CellsUsed())
+                {
+                    string hdr = c.GetString().Trim();
+                    if (string.Equals(hdr, "Lehrer", System.StringComparison.OrdinalIgnoreCase))
+                        colLehrer = c.Address.ColumnNumber;
+                    else if (string.Equals(hdr, "Fach", System.StringComparison.OrdinalIgnoreCase))
+                        colFach = c.Address.ColumnNumber;
+                    else if (string.Equals(hdr, "Klasse(n)", System.StringComparison.OrdinalIgnoreCase))
+                        colKlassen = c.Address.ColumnNumber;
+                    else if (string.Equals(hdr, "Ignore (i)", System.StringComparison.OrdinalIgnoreCase) ||
+                             string.Equals(hdr, "Ignore", System.StringComparison.OrdinalIgnoreCase))
+                        colIgnore = c.Address.ColumnNumber;
+                    else if (string.Equals(hdr, "ZeilenText-2", System.StringComparison.OrdinalIgnoreCase))
+                        colZt2Local = c.Address.ColumnNumber;
+                }
+
+                if (colIgnore < 0)
+                {
+                    MessageBox.Show("Spalte 'Ignore (i)' nicht in U-Verteilung gefunden.");
+                    return;
+                }
+                if (colLehrer < 0 || colFach < 0 || colKlassen < 0)
+                {
+                    MessageBox.Show("Spalten 'Lehrer', 'Fach' oder 'Klasse(n)' nicht gefunden.");
+                    return;
+                }
+
+                foreach (var row in sheet.RangeUsed().RowsUsed().Skip(1))
+                {
+                    string lehrer = row.Cell(colLehrer).GetString().Trim();
+                    string fach   = row.Cell(colFach).GetString().Trim();
+                    string klassenStr = row.Cell(colKlassen).GetString();
+                    string zt2    = colZt2Local > 0 ? row.Cell(colZt2Local).GetString().Trim() : "";
+
+                    var klassenInZeile = klassenStr
+                        .Split(',')
+                        .Select(k => k.Trim())
+                        .Where(k => k.Length > 0)
+                        .ToList();
+
+                    // ODER zwischen allen Filtern — eine Übereinstimmung reicht.
+                    bool treffer =
+                        klassenInZeile.Any(k => fKlassen.Contains(k)) ||
+                        fLehrer.Contains(lehrer) ||
+                        fFächer.Contains(fach) ||
+                        fZt2.Contains(zt2);
+
+                    if (!treffer) continue;
+
+                    if (dialog.IgnorierenEntfernen)
+                    {
+                        // "i" aus Treffern entfernen — nur leeren wenn auch wirklich "i" drinsteht
+                        string aktuell = row.Cell(colIgnore).GetString().Trim().ToLower();
+                        if (aktuell == "i")
+                        {
+                            row.Cell(colIgnore).Value = "";
+                            markiert++;
+                        }
+                    }
+                    else
+                    {
+                        // Treffer mit "i" markieren
+                        row.Cell(colIgnore).Value = "i";
+                        markiert++;
+                    }
+                }
+
+                wb.Save();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Fehler beim Schreiben: {ex.Message}");
+                return;
+            }
+
+            string aktionsText = dialog.IgnorierenEntfernen
+                ? $"In {markiert} Zeile(n) wurde das 'i' entfernt."
+                : $"{markiert} Zeile(n) wurden mit 'i' markiert.";
+
+            MessageBox.Show(
+                aktionsText + "\n\n" +
+                "Bitte Button 2 (Excel laden) erneut drücken, damit die Änderungen wirksam werden.",
+                "Fertig",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            Log($"Gezielt ignorieren ({(dialog.IgnorierenEntfernen ? "entfernen" : "setzen")}): {markiert} Zeilen betroffen.");
+        }
+
+        // =====================================================
+        // BUTTON – GEZIELT FIXIEREN
+        // =====================================================
+        private void BtnFixieren_Click(object sender, RoutedEventArgs e)
+        {
+            if (input == null)
+            {
+                MessageBox.Show("Bitte zuerst Excel-Datei laden (Button 2).");
+                return;
+            }
+
+            // Auswahl-Listen direkt aus UV lesen (inkl. ignorierter Zeilen)
+            var (alleKlassen, alleLehrer, alleFächer, alleZeilentext2) = LeseFilterListenAusUV();
+
+            var verfügbareLösungen = letzteSolutions != null
+                ? letzteSolutions.Select(s => s.label).ToList()
+                : new List<string>();
+
+            var dialog = new FixierenDialog(alleKlassen, alleLehrer, alleFächer, alleZeilentext2, verfügbareLösungen)
+                { Owner = this };
+            if (dialog.ShowDialog() != true) return;
+
+            var fKlassen = new HashSet<string>(dialog.GewählteKlassen);
+            var fLehrer  = new HashSet<string>(dialog.GewählteLehrer);
+            var fFächer  = new HashSet<string>(dialog.GewählteFächer);
+            var fZt2     = new HashSet<string>(dialog.GewählteZeilentext2);
+
+            int markiert = 0;
+            var getroffeneUNrn = new HashSet<int>();   // für FixUNrn-Übernahme
+
+            try
+            {
+                using var wb = new ClosedXML.Excel.XLWorkbook(excelPfad);
+                var sheet = wb.Worksheet("UV");
+                var headerRow = sheet.Row(1);
+
+                int colLehrer = -1, colFach = -1, colKlassen = -1, colFix = -1, colZt2Local = -1, colUNr = -1;
+                foreach (var c in headerRow.CellsUsed())
+                {
+                    string hdr = c.GetString().Trim();
+                    if (string.Equals(hdr, "Lehrer", System.StringComparison.OrdinalIgnoreCase))
+                        colLehrer = c.Address.ColumnNumber;
+                    else if (string.Equals(hdr, "Fach", System.StringComparison.OrdinalIgnoreCase))
+                        colFach = c.Address.ColumnNumber;
+                    else if (string.Equals(hdr, "Klasse(n)", System.StringComparison.OrdinalIgnoreCase))
+                        colKlassen = c.Address.ColumnNumber;
+                    else if (string.Equals(hdr, "Fix (X)", System.StringComparison.OrdinalIgnoreCase) ||
+                             string.Equals(hdr, "Fix", System.StringComparison.OrdinalIgnoreCase))
+                        colFix = c.Address.ColumnNumber;
+                    else if (string.Equals(hdr, "ZeilenText-2", System.StringComparison.OrdinalIgnoreCase))
+                        colZt2Local = c.Address.ColumnNumber;
+                    else if (string.Equals(hdr, "U-Nr", System.StringComparison.OrdinalIgnoreCase) ||
+                             string.Equals(hdr, "UNr",  System.StringComparison.OrdinalIgnoreCase))
+                        colUNr = c.Address.ColumnNumber;
+                }
+
+                if (colFix < 0)
+                {
+                    MessageBox.Show("Spalte 'Fix (X)' nicht in UV gefunden.");
+                    return;
+                }
+                if (colLehrer < 0 || colFach < 0 || colKlassen < 0)
+                {
+                    MessageBox.Show("Spalten 'Lehrer', 'Fach' oder 'Klasse(n)' nicht gefunden.");
+                    return;
+                }
+                if (dialog.InFixUNrnEintragen && colUNr < 0)
+                {
+                    MessageBox.Show("Für die Übernahme in 'Fix UNrn' wird die Spalte 'UNr' in UV benötigt — wurde aber nicht gefunden.");
+                    return;
+                }
+
+                foreach (var row in sheet.RangeUsed().RowsUsed().Skip(1))
+                {
+                    string lehrer = row.Cell(colLehrer).GetString().Trim();
+                    string fach   = row.Cell(colFach).GetString().Trim();
+                    string klassenStr = row.Cell(colKlassen).GetString();
+                    string zt2    = colZt2Local > 0 ? row.Cell(colZt2Local).GetString().Trim() : "";
+
+                    var klassenInZeile = klassenStr
+                        .Split(',')
+                        .Select(k => k.Trim())
+                        .Where(k => k.Length > 0)
+                        .ToList();
+
+                    bool treffer =
+                        klassenInZeile.Any(k => fKlassen.Contains(k)) ||
+                        fLehrer.Contains(lehrer) ||
+                        fFächer.Contains(fach) ||
+                        fZt2.Contains(zt2);
+
+                    // Treffer → markieren oder X entfernen
+                    if (treffer)
+                    {
+                        if (dialog.FixierenEntfernen)
+                        {
+                            string aktuell = row.Cell(colFix).GetString().Trim().ToLower();
+                            if (aktuell == "x")
+                            {
+                                row.Cell(colFix).Value = "";
+                                markiert++;
+                            }
+                        }
+                        else
+                        {
+                            row.Cell(colFix).Value = "X";
+                            markiert++;
+                        }
+                    }
+
+                    // Bei aktivierter Checkbox: ALLE Zeilen mit "X" in Fix (X) für die
+                    // FixUNrn-Übernahme einsammeln — egal ob in diesem Aufruf gesetzt
+                    // oder schon vorher manuell markiert. Stand nach evtl. Aktion oben.
+                    if (dialog.InFixUNrnEintragen && colUNr > 0)
+                    {
+                        string fixWertJetzt = row.Cell(colFix).GetString().Trim().ToLower();
+                        if (fixWertJetzt == "x")
+                        {
+                            // Robust: erst GetValue<int>, dann TryParse als Fallback
+                            int unr = 0;
+                            bool gotUnr = false;
+                            try
+                            {
+                                unr = row.Cell(colUNr).GetValue<int>();
+                                gotUnr = unr > 0;
+                            }
+                            catch
+                            {
+                                string s = row.Cell(colUNr).GetString().Trim();
+                                gotUnr = int.TryParse(s, out unr) && unr > 0;
+                            }
+                            if (gotUnr) getroffeneUNrn.Add(unr);
+                        }
+                    }
+                }
+
+                wb.Save();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Fehler beim Schreiben in UV: {ex.Message}");
+                return;
+            }
+
+            // Optionale Übernahme in Fix UNrn (basierend auf ausgewählter Lösung)
+            int fixunrnEingetragen = 0;
+            if (dialog.InFixUNrnEintragen)
+            {
+                Log($"Fix-UNrn-Übernahme angefragt: {getroffeneUNrn.Count} UNrn gesammelt, Lösung='{dialog.GewählteLösung}'");
+                if (getroffeneUNrn.Count == 0)
+                {
+                    MessageBox.Show("Keine UNrn mit 'X' in Spalte 'Fix (X)' gefunden — nichts zu übertragen.\n\n" +
+                        "Mögliche Ursachen:\n" +
+                        "- Die Filter haben keine Treffer ergeben UND vorher war keine Zeile mit 'X' markiert\n" +
+                        "- Spalte 'UNr' enthält keine gültigen Zahlen");
+                }
+                else
+                {
+                    try
+                    {
+                        fixunrnEingetragen = TrageInFixUNrnEin(getroffeneUNrn, dialog.GewählteLösung);
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show($"Fehler beim Eintragen in 'Fix UNrn': {ex.Message}");
+                    }
+                }
+            }
+
+            string aktionsText = dialog.FixierenEntfernen
+                ? $"In {markiert} Zeile(n) wurde das 'X' entfernt."
+                : $"{markiert} Zeile(n) wurden mit 'X' markiert.";
+            if (dialog.InFixUNrnEintragen)
+                aktionsText += $"\n{fixunrnEingetragen} Eintrag/Einträge in 'Fix UNrn' hinzugefügt.";
+
+            MessageBox.Show(
+                aktionsText + "\n\nBitte Button 2 (Excel laden) erneut drücken, damit die Änderungen wirksam werden.",
+                "Fertig",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            Log($"Gezielt fixieren ({(dialog.FixierenEntfernen ? "entfernen" : "setzen")}): {markiert} Zeilen betroffen" +
+                (dialog.InFixUNrnEintragen ? $", {fixunrnEingetragen} Fix UNrn-Einträge" : "") + ".");
+        }
+
+        // Liest alle eindeutigen Werte für Klassen, Lehrer, Fächer und ZeilenText-2
+        // DIREKT aus der UV-Tabelle — inklusive ignorierter Zeilen (Spalte 'Ignore (i)' = "i"),
+        // damit auch komplett ignorierte Werte in den Filter-Listen sichtbar bleiben.
+        private (List<string> klassen, List<string> lehrer, List<string> faecher, List<string> zt2)
+            LeseFilterListenAusUV()
+        {
+            var klassenSet = new HashSet<string>();
+            var lehrerSet  = new HashSet<string>();
+            var faecherSet = new HashSet<string>();
+            var zt2Set     = new HashSet<string>();
+
+            try
+            {
+                using var wb = new ClosedXML.Excel.XLWorkbook(excelPfad);
+                var sheet = wb.Worksheet("UV");
+
+                int colLehrer = -1, colFach = -1, colKlassen = -1, colZt2 = -1;
+                var alleHeader = new List<string>();
+                foreach (var c in sheet.Row(1).CellsUsed())
+                {
+                    string hdr = c.GetString().Trim();
+                    alleHeader.Add($"'{hdr}'@{c.Address.ColumnNumber}");
+                    if (string.Equals(hdr, "Lehrer", System.StringComparison.OrdinalIgnoreCase))
+                        colLehrer = c.Address.ColumnNumber;
+                    else if (string.Equals(hdr, "Fach", System.StringComparison.OrdinalIgnoreCase))
+                        colFach = c.Address.ColumnNumber;
+                    else if (string.Equals(hdr, "Klasse(n)", System.StringComparison.OrdinalIgnoreCase))
+                        colKlassen = c.Address.ColumnNumber;
+                    else if (string.Equals(hdr, "ZeilenText-2", System.StringComparison.OrdinalIgnoreCase))
+                        colZt2 = c.Address.ColumnNumber;
+                }
+
+                Log($"UV-Header gefunden: {string.Join(", ", alleHeader)}");
+                Log($"Erkannte Spalten: Lehrer={colLehrer}, Fach={colFach}, Klasse(n)={colKlassen}, ZeilenText-2={colZt2}");
+
+                int rows = 0;
+                foreach (var row in sheet.RangeUsed().RowsUsed().Skip(1))
+                {
+                    rows++;
+                    if (colLehrer > 0)
+                    {
+                        string l = row.Cell(colLehrer).GetString().Trim();
+                        if (!string.IsNullOrEmpty(l)) lehrerSet.Add(l);
+                    }
+                    if (colFach > 0)
+                    {
+                        string f = row.Cell(colFach).GetString().Trim();
+                        if (!string.IsNullOrEmpty(f)) faecherSet.Add(f);
+                    }
+                    if (colKlassen > 0)
+                    {
+                        string ks = row.Cell(colKlassen).GetString();
+                        foreach (var k in ks.Split(',').Select(x => x.Trim()).Where(x => x.Length > 0))
+                            klassenSet.Add(k);
+                    }
+                    if (colZt2 > 0)
+                    {
+                        string z = row.Cell(colZt2).GetString().Trim();
+                        if (!string.IsNullOrEmpty(z)) zt2Set.Add(z);
+                    }
+                }
+
+                Log($"UV-Filter-Listen: {rows} Zeilen → {klassenSet.Count} Klassen, {lehrerSet.Count} Lehrer, {faecherSet.Count} Fächer, {zt2Set.Count} Zt2");
+            }
+            catch (Exception ex)
+            {
+                Log($"Konnte Filter-Listen aus UV nicht lesen: {ex.Message}");
+            }
+
+            return (klassenSet.ToList(), lehrerSet.ToList(), faecherSet.ToList(), zt2Set.ToList());
+        }
+
+        // Hilfsfunktion: Trägt UNrn aus der ausgewählten Lösung in "Fix UNrn" ein.
+        // Pro UNr werden alle Slots ergänzt, in denen sie in dieser Lösung verplant ist.
+        private int TrageInFixUNrnEin(HashSet<int> uNrn, string lösungLabel)
+        {
+            int eingetragen = 0;
+
+            Log($"FixUNrn-Übernahme: {uNrn.Count} UNrn aus Lösung '{lösungLabel}'");
+
+            if (letzteSolutions == null || letzteSolutions.Count == 0)
+            {
+                MessageBox.Show("Keine Lösungen vorhanden — bitte zuerst Button 3 ausführen.");
+                return 0;
+            }
+
+            var lösung = letzteSolutions.FirstOrDefault(s => s.label == lösungLabel);
+            if (lösung.label == null || lösung.belegung == null)
+            {
+                MessageBox.Show($"Lösung '{lösungLabel}' nicht gefunden.\n\n" +
+                    $"Verfügbar: {string.Join(", ", letzteSolutions.Select(s => s.label))}");
+                return 0;
+            }
+
+            var slots = input.Slots;
+            var blocks = lösung.blocks;
+            var belegung = lösung.belegung;
+            int B = blocks.Count;
+            int S = slots.Count;
+
+            // UNr → Block-Index Mapping
+            var unrZuBlock = new Dictionary<int, int>();
+            for (int b = 0; b < B; b++)
+                unrZuBlock[blocks[b].UNr] = b;
+
+            int nichtInLösung = uNrn.Count(u => !unrZuBlock.ContainsKey(u));
+            int bereitsVorhanden = 0;
+            if (nichtInLösung > 0)
+                Log($"  Warnung: {nichtInLösung} der UNrn sind in Lösung '{lösungLabel}' nicht enthalten");
+
+            using var wb = new ClosedXML.Excel.XLWorkbook(excelPfad);
+
+            IXLWorksheet fixSheet;
+            if (wb.Worksheets.Any(ws => ws.Name == "Fix UNrn"))
+                fixSheet = wb.Worksheet("Fix UNrn");
+            else
+            {
+                fixSheet = wb.Worksheets.Add("Fix UNrn");
+                fixSheet.Cell(1, 1).Value = "WTag";
+                fixSheet.Cell(1, 2).Value = "Stunde";
+                fixSheet.Cell(1, 1).Style.Font.Bold = true;
+                fixSheet.Cell(1, 2).Style.Font.Bold = true;
+            }
+
+            // Bestehende Fix-UNrn pro (WTag, Stunde) einlesen
+            var bestehende = new Dictionary<(string wtag, int stunde), HashSet<int>>();
+            int fixLastRow = fixSheet.LastRowUsed()?.RowNumber() ?? 1;
+            int fixLastCol = fixSheet.LastColumnUsed()?.ColumnNumber() ?? 2;
+            for (int r = 2; r <= fixLastRow; r++)
+            {
+                string wt = fixSheet.Cell(r, 1).GetString().Trim();
+                if (!int.TryParse(fixSheet.Cell(r, 2).GetString().Trim(), out int st)) continue;
+                var key = (wt, st);
+                if (!bestehende.ContainsKey(key)) bestehende[key] = new HashSet<int>();
+                for (int c = 3; c <= fixLastCol; c++)
+                {
+                    string v = fixSheet.Cell(r, c).GetString().Trim();
+                    if (int.TryParse(v, out int u))
+                        bestehende[key].Add(u);
+                }
+            }
+
+            // Lookup (WTag, Stunde) → Zeilenindex
+            var fixZeileFuer = new Dictionary<(string, int), int>();
+            for (int r = 2; r <= fixLastRow; r++)
+            {
+                string wt = fixSheet.Cell(r, 1).GetString().Trim();
+                if (int.TryParse(fixSheet.Cell(r, 2).GetString().Trim(), out int st))
+                    fixZeileFuer[(wt, st)] = r;
+            }
+            int nächsteNeueZeile = fixLastRow + 1;
+
+            // Für jede getroffene UNr alle ihre belegten Slots in dieser Lösung sammeln
+            foreach (int unr in uNrn)
+            {
+                if (!unrZuBlock.TryGetValue(unr, out int b)) continue;
+
+                for (int s = 0; s < S; s++)
+                {
+                    if (belegung[b, s] != 1) continue;
+
+                    string wtag = slots[s].WTag;
+                    int stunde = slots[s].Stunde;
+                    var key = (wtag, stunde);
+
+                    if (bestehende.TryGetValue(key, out var set) && set.Contains(unr))
+                    {
+                        bereitsVorhanden++;
+                        continue;
+                    }
+
+                    if (!fixZeileFuer.TryGetValue(key, out int fixRow))
+                    {
+                        fixRow = nächsteNeueZeile++;
+                        fixSheet.Cell(fixRow, 1).Value = wtag;
+                        fixSheet.Cell(fixRow, 2).Value = stunde;
+                        fixZeileFuer[key] = fixRow;
+                        bestehende[key] = new HashSet<int>();
+                    }
+
+                    int freieSpalte = 3;
+                    while (!fixSheet.Cell(fixRow, freieSpalte).IsEmpty())
+                        freieSpalte++;
+                    fixSheet.Cell(fixRow, freieSpalte).Value = unr;
+                    bestehende[key].Add(unr);
+                    eingetragen++;
+                }
+            }
+
+            wb.Save();
+            Log($"  → {eingetragen} neu eingetragen, {bereitsVorhanden} bereits vorhanden");
+            return eingetragen;
         }
 
         // =====================================================

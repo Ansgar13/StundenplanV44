@@ -18,6 +18,7 @@ namespace Stundenplan_V2
             List<BoolVar> stdFolgeVars,
             List<BoolVar> späteLkVars,
             List<BoolVar> hauptfachSpätVars,
+            List<BoolVar> minus2LehrerVars,
             int gewichtFrüh = 1,
             int gewichtSpät = 5,
             int gewichtPäd = 5,
@@ -28,7 +29,8 @@ namespace Stundenplan_V2
             int strafeEinzel = 0,
             int strafeStdFolge = 5,
             int strafeSpäteLk = 0,
-            int strafeHauptfachSpät = 0)
+            int strafeHauptfachSpät = 0,
+            int strafeMinus2 = 0)
         {
             LinearExpr Sum(List<BoolVar> vars) =>
                 vars.Count > 0 ? LinearExpr.Sum(vars) : LinearExpr.Constant(0);
@@ -44,7 +46,8 @@ namespace Stundenplan_V2
                 - Sum(einzelVars)           *  strafeEinzel
                 - Sum(stdFolgeVars)         *  strafeStdFolge
                 - Sum(späteLkVars)          *  strafeSpäteLk
-                - Sum(hauptfachSpätVars)    *  strafeHauptfachSpät;
+                - Sum(hauptfachSpätVars)    *  strafeHauptfachSpät
+                - Sum(minus2LehrerVars)     *  strafeMinus2;
         }
     }
 }

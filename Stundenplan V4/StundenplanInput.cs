@@ -29,6 +29,14 @@ public class StundenplanInput
     // Verbot Doppelstunden ab Stunde 6/7 aufwärts (5/6 bleibt erlaubt)
     public bool VerbotSpäteDoppel { get; set; } = false;
 
+    // -2-Lehrer-Wünsche: entweder hart verboten oder mit Strafe belegt
+    public bool VerbotMinus2Verletzungen { get; set; } = false;
+    public int  StrafeMinus2Verletzungen { get; set; } = 0;
+
+    // Lehrer, die neben ihrem Freie-Tage-Wunsch eine -2 eingetragen haben
+    public HashSet<string> LehrerFreiTageMinus2 { get; set; } = new();
+    public HashSet<string> LehrerFreiTageMinus3 { get; set; } = new();
+
     // Hauptfach-Strafe: Hauptfächer (D,E,M,F) nicht zu oft nach Stunde 4
     public int HauptfachSpätAnteilProzent { get; set; } = 50; // max x% der Stunden nach Stunde 4
     public int StrafeHauptfachSpät { get; set; } = 0;         // Strafe pro Stunde über dem Limit

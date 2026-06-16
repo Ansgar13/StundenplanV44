@@ -1,4 +1,4 @@
-﻿using Google.OrTools.Sat;
+using Google.OrTools.Sat;
 using System.Collections.Generic;
 
 namespace Stundenplan_V2
@@ -11,7 +11,8 @@ namespace Stundenplan_V2
             List<UnterrichtsBlock> blocks,
             List<ZeitSlot> slots,
             int B,
-            int S)
+            int S,
+            bool verbotMinus2Lehrer = false)
         {
             for (int b = 0; b < B; b++)
             {
@@ -19,11 +20,12 @@ namespace Stundenplan_V2
                 {
                     foreach (var t in blocks[b].Teile)
                     {
-                        // Lehrer gesperrt
-                        if (slots[s].LehrerWunsch.TryGetValue(t.Lehrer, out int lw) && lw == -3)
+                        // Lehrer gesperrt (-3 immer, -2 nur wenn Verbot aktiv)
+                        if (slots[s].LehrerWunsch.TryGetValue(t.Lehrer, out int lw) &&
+                            (lw == -3 || (verbotMinus2Lehrer && lw == -2)))
                             model.Add(x[b, s] == 0);
 
-                        // Klassen gesperrt
+                        // Klassen gesperrt (nur -3, -2 wird für Klassen nicht unterstützt)
                         foreach (var k in t.Klassen)
                         {
                             if (slots[s].KlassenWunsch.TryGetValue(k, out int kw) && kw == -3)

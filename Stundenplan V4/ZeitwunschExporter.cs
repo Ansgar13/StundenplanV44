@@ -1,4 +1,4 @@
-﻿using ClosedXML.Excel;
+using ClosedXML.Excel;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -64,8 +64,8 @@ namespace Stundenplan_V2
 
             using (var workbook = new XLWorkbook(excelPfad))
             {
-                ErzeugeTabelle(workbook, "ZeitWL", lehrerDaten);
-                ErzeugeTabelle(workbook, "ZeitWK", klassenDaten);
+                ErzeugeTabelle(workbook, "ZWL", lehrerDaten);
+                ErzeugeTabelle(workbook, "ZWK", klassenDaten);
 
                 workbook.Save();
             }

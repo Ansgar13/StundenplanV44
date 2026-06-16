@@ -1,4 +1,4 @@
-﻿using ClosedXML.Excel;
+using ClosedXML.Excel;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -11,11 +11,13 @@ namespace Stundenplan_V2
             List<UnterrichtsBlock> unterrichtListe,
             List<ZeitSlot> zeitRaster,
             string suffix,
-            HashSet<string> klassenFilter = null)
+            HashSet<string>? klassenFilter = null)
         {
             using var workbook = new XLWorkbook(excelPfad);
 
-            string sheetName = "Klassenpläne_" + suffix;
+            string sheetName = "KP_" + suffix;
+            if (sheetName.Length > 31)
+                sheetName = sheetName.Substring(0, 31);
 
             if (workbook.Worksheets.Any(ws => ws.Name == sheetName))
                 workbook.Worksheet(sheetName).Delete();
@@ -24,7 +26,7 @@ namespace Stundenplan_V2
 
             sheet.Column(1).Width = 12;
             for (int i = 2; i <= 6; i++)
-                sheet.Column(i).Width = 20;
+                sheet.Column(i).Width = 32;
 
             var tage = zeitRaster.Select(z => z.WTag).Distinct().ToList();
             var stunden = zeitRaster.Select(z => z.Stunde).Distinct().OrderBy(x => x).ToList();
@@ -42,72 +44,52 @@ namespace Stundenplan_V2
             string Key(string lehrer, string fach, IEnumerable<string> klassen) =>
                 lehrer + "|" + fach + "|" + string.Join(",", klassen.OrderBy(x => x));
 
-            // spaeteDoppel: Key → minimale Stunde der zugehörigen Einzelstunde
-            // (die dritte Stunde der pädagogischen Einheit)
-            var spaeteDoppel = new Dictionary<string, int>();
+            // =====================================================
+            // Robuste Erkennung der späten pädagogischen Einheiten:
+            // Pro Lehrer/Fach/Klassen-Tripel:
+            //   - alle Belegungs-Slots sammeln
+            //   - Wenn mindestens eine Doppelstunde ab Stunde 5 existiert
+            //     UND alle Belegungen Stunde >= 4 sind
+            //     → späte päd Einheit
+            // =====================================================
+            var späteTripelKeys = new HashSet<string>();
 
-            for (int i = 0; i < zeitRaster.Count - 1; i++)
+            // Slots pro Tripel sammeln
+            var tripelSlots = new Dictionary<string, List<(string wtag, int stunde)>>();
+            foreach (var slot in zeitRaster)
             {
-                var s1 = zeitRaster[i];
-                var s2 = zeitRaster[i + 1];
-
-                if (s1.WTag != s2.WTag) continue;
-                if (s1.Stunde + 1 != s2.Stunde) continue;
-
-                foreach (var u1 in s1.BelegteUNrn)
+                foreach (var u in slot.BelegteUNrn)
                 {
-                    var b1 = blockLookup[u1];
-
-                    foreach (var t1 in b1.Teile)
+                    var block = blockLookup[u];
+                    foreach (var teil in block.Teile)
                     {
-                        foreach (var u2 in s2.BelegteUNrn)
-                        {
-                            var b2 = blockLookup[u2];
-
-                            foreach (var t2 in b2.Teile)
-                            {
-                                if (t1.Lehrer == t2.Lehrer &&
-                                    t1.Fach == t2.Fach &&
-                                    t1.Klassen.OrderBy(x => x)
-                                      .SequenceEqual(t2.Klassen.OrderBy(x => x)))
-                                {
-                                    if (s1.Stunde >= 5)
-                                    {
-                                        string k = Key(t1.Lehrer, t1.Fach, t1.Klassen);
-
-                                        // Suche Einzelstunde desselben Lehrers/Fachs
-                                        // an einem beliebigen Tag (nicht diese Doppelstunde)
-                                        int einzelStunde = int.MaxValue;
-                                        foreach (var sX in zeitRaster
-                                            .Where(z => !(z.WTag == s1.WTag &&
-                                                         (z.Stunde == s1.Stunde ||
-                                                          z.Stunde == s2.Stunde))))
-                                        {
-                                            foreach (var uX in sX.BelegteUNrn)
-                                            {
-                                                var bX = blockLookup[uX];
-                                                if (bX.Teile.Any(tX =>
-                                                    tX.Lehrer == t1.Lehrer &&
-                                                    tX.Fach == t1.Fach &&
-                                                    tX.Klassen.OrderBy(x => x)
-                                                      .SequenceEqual(t1.Klassen.OrderBy(x => x))))
-                                                {
-                                                    if (sX.Stunde < einzelStunde)
-                                                        einzelStunde = sX.Stunde;
-                                                }
-                                            }
-                                        }
-
-                                        // Speichere die minimale Einzelstunde für diesen Key
-                                        if (!spaeteDoppel.ContainsKey(k) ||
-                                            einzelStunde < spaeteDoppel[k])
-                                            spaeteDoppel[k] = einzelStunde;
-                                    }
-                                }
-                            }
-                        }
+                        var k = Key(teil.Lehrer, teil.Fach, teil.Klassen);
+                        if (!tripelSlots.ContainsKey(k))
+                            tripelSlots[k] = new List<(string, int)>();
+                        tripelSlots[k].Add((slot.WTag, slot.Stunde));
                     }
                 }
+            }
+
+            foreach (var kv in tripelSlots)
+            {
+                var sl = kv.Value;
+                if (sl.Count < 3) continue;             // pädagog. Einheit ab 3 Wst
+                if (sl.Any(s => s.stunde < 4)) continue;// vormittags-Slot → nicht "spät"
+
+                // Mindestens eine Doppelstunde ab Stunde 5?
+                bool hatSpäteDoppel = false;
+                foreach (var s1 in sl)
+                {
+                    if (s1.stunde < 5) continue;
+                    if (sl.Any(s2 => s2.wtag == s1.wtag && s2.stunde == s1.stunde + 1))
+                    {
+                        hatSpäteDoppel = true;
+                        break;
+                    }
+                }
+                if (hatSpäteDoppel)
+                    späteTripelKeys.Add(kv.Key);
             }
 
             int startRow = 1;
@@ -134,7 +116,26 @@ namespace Stundenplan_V2
 
                 foreach (var stunde in stunden)
                 {
-                    sheet.Row(startRow).Height = 45;
+                    // Berechne max. Anzahl unterschiedlicher Blöcke in irgendeiner Zelle
+                    // dieser Stunde (für diese Klasse), um die Zeilenhöhe anzupassen
+                    int maxBlöckeProZelle = 1;
+                    foreach (var tag in tage)
+                    {
+                        var slotCheck = zeitRaster
+                            .FirstOrDefault(z => z.WTag == tag && z.Stunde == stunde);
+                        if (slotCheck == null) continue;
+
+                        int anzBlöcke = slotCheck.BelegteUNrn
+                            .Select(u => blockLookup[u])
+                            .Where(b => b.Teile.Any(t => t.Klassen.Contains(klasse)))
+                            .Select(b => b.UNr)
+                            .Distinct()
+                            .Count();
+                        if (anzBlöcke > maxBlöckeProZelle)
+                            maxBlöckeProZelle = anzBlöcke;
+                    }
+
+                    sheet.Row(startRow).Height = 45 * maxBlöckeProZelle;
                     sheet.Cell(startRow, 1).Value = stunde;
 
                     for (int t = 0; t < tage.Count; t++)
@@ -165,21 +166,45 @@ namespace Stundenplan_V2
                         if (passendeTeileMitBlock.Count == 0) goto NächsteZelle;
 
                         {
-                            // Lehrer und Fächer zusammenbauen
-                            string lehrer = string.Join(", ", passendeTeileMitBlock.Select(x => x.teil.Lehrer));
-                            string fach   = string.Join(", ", passendeTeileMitBlock.Select(x => x.teil.Fach));
-                            var erstBlock = passendeTeileMitBlock[0].block;
-                            var erstTeil  = passendeTeileMitBlock[0].teil;
+                            // Gruppiere nach Block (UNr) — falls eine Klasse mehrere
+                            // Unterrichte im selben Slot hat, jeden separat anzeigen
+                            var gruppiertNachBlock = passendeTeileMitBlock
+                                .GroupBy(x => x.block.UNr)
+                                .Select(g => (Block: g.First().block, Teile: g.Select(x => x.teil).ToList()))
+                                .ToList();
+
+                            var erstBlock = gruppiertNachBlock[0].Block;
+                            var erstTeil  = gruppiertNachBlock[0].Teile[0];
                             string key    = Key(erstTeil.Lehrer, erstTeil.Fach, erstTeil.Klassen);
 
                             cell.Clear();
                             var rt = cell.GetRichText();
-                            rt.AddText(lehrer + "\n");
-                            rt.AddText(fach + "\n");
-                            rt.AddText($"UNr {erstBlock.UNr}    ");
-                            var zt = rt.AddText(erstBlock.Zeilentext ?? "");
-                            zt.Bold = true;
-                            zt.FontSize = 13;
+
+                            for (int gi = 0; gi < gruppiertNachBlock.Count; gi++)
+                            {
+                                var gr = gruppiertNachBlock[gi];
+
+                                if (gi > 0)
+                                    rt.AddText("\n");  // Leerzeile als Trenner
+
+                                string lehrerG = string.Join(", ", gr.Teile.Select(t => t.Lehrer));
+                                string fachG   = string.Join(", ", gr.Teile.Select(t => t.Fach));
+
+                                rt.AddText(lehrerG + "\n");
+                                rt.AddText(fachG + "\n");
+                                rt.AddText($"UNr {gr.Block.UNr}    ");
+                                var zt = rt.AddText(gr.Block.Zeilentext ?? "");
+                                zt.Bold = true;
+                                zt.FontSize = 13;
+
+                                // "Fix"-Marker am Ende, wenn diese UNr in diesem Slot fixiert ist
+                                if (slot.FixUNrn.Contains(gr.Block.UNr))
+                                {
+                                    var fx = rt.AddText("   Fix");
+                                    fx.Bold = true;
+                                    fx.FontColor = XLColor.DarkBlue;
+                                }
+                            }
 
                             cell.Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Left;
                             cell.Style.Alignment.Vertical   = XLAlignmentVerticalValues.Center;
@@ -224,31 +249,49 @@ namespace Stundenplan_V2
 
                             bool spaeteEinzel =
                                 stunde >= 5 &&
-                                !istDoppel &&
-                                spaeteDoppel.ContainsKey(key);
+                                !istDoppel;
 
-                            bool istSpätePädEinheit =
-                                spaeteDoppel.TryGetValue(key, out int einzelStd) &&
-                                einzelStd >= 4 &&
-                                einzelStd != int.MaxValue;
+                            // Robust: prüfe ALLE passenden Teile (nicht nur den ersten)
+                            bool istSpätePädEinheit = passendeTeileMitBlock.Any(p =>
+                                späteTripelKeys.Contains(Key(p.teil.Lehrer, p.teil.Fach, p.teil.Klassen)));
 
                             var fachTrim = erstTeil.Fach.Trim().ToUpper();
+                            string zeilentextTrim = (erstBlock.Zeilentext ?? "").Trim().ToUpperInvariant();
+                            string klasseTrim = (klasse ?? "").Trim().ToUpperInvariant();
+                            bool istOberstufe = klasseTrim == "Q1" || klasseTrim == "Q2";
 
-                            if (fachTrim.EndsWith("L1"))
-                                cell.Style.Fill.BackgroundColor = XLColor.LightBlue;
-                            else if (fachTrim.EndsWith("L2"))
-                                cell.Style.Fill.BackgroundColor = XLColor.CornflowerBlue;
-                            else if (spaeteEinzel && istSpätePädEinheit)
-                                cell.Style.Fill.BackgroundColor = XLColor.Orange;
-                            else if (istDoppel && stunde >= 5 && istSpätePädEinheit)
-                                cell.Style.Fill.BackgroundColor = XLColor.Orange;
+                            // LK-Erkennung: zuerst über Zeilentext (LK01/LK02),
+                            // dann fallback auf Fach-Endung (für Setups ohne LK-Zeilentexte)
+                            bool istLK01 = zeilentextTrim.Contains("LK01") ||
+                                           zeilentextTrim.Contains("LK1") ||
+                                           (!zeilentextTrim.Contains("LK") && fachTrim.EndsWith("L1"));
+                            bool istLK02 = zeilentextTrim.Contains("LK02") ||
+                                           zeilentextTrim.Contains("LK2") ||
+                                           (!zeilentextTrim.Contains("LK") && fachTrim.EndsWith("L2"));
+
+                            // Ausnahme für Rotfärbung: ZeilenText-2 = "S2-Block spät" → kein Rot
+                            bool istS2BlockSpät = (erstBlock.Zeilentext2 ?? "").Trim()
+                                .Equals("S2-Block spät", System.StringComparison.OrdinalIgnoreCase);
+
+                            if (istLK01)
+                                cell.Style.Fill.BackgroundColor =
+                                    istOberstufe ? XLColor.DarkOrange : XLColor.Orange;
+                            else if (istLK02)
+                                cell.Style.Fill.BackgroundColor =
+                                    istOberstufe ? XLColor.SteelBlue : XLColor.CornflowerBlue;
+                            else if (istSpätePädEinheit && !istS2BlockSpät)
+                                // Späte pädagogische Einheit: rot — außer bei "S2-Block spät"
+                                cell.Style.Fill.BackgroundColor = XLColor.Red;
                             else if (istDoppel)
                                 cell.Style.Fill.BackgroundColor = XLColor.Yellow;
+                            else
+                                // Standardmäßig belegte Zellen hellgrau
+                                cell.Style.Fill.BackgroundColor = XLColor.LightGray;
                         }
 
                         NächsteZelle:
 
-                        if (slot.KlassenWunsch.ContainsKey(klasse))
+                        if (!string.IsNullOrEmpty(klasse) && slot.KlassenWunsch.ContainsKey(klasse))
                             FärbeZelle(cell, slot.KlassenWunsch[klasse]);
 
                         cell.Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Left;

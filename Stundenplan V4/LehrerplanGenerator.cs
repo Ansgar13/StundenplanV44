@@ -1,4 +1,4 @@
-﻿using ClosedXML.Excel;
+using ClosedXML.Excel;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -14,7 +14,9 @@ namespace Stundenplan_V2
         {
             using var workbook = new XLWorkbook(excelPfad);
 
-            string sheetName = "Lehrerpläne_" + suffix;
+            string sheetName = "LP_" + suffix;
+            if (sheetName.Length > 31)
+                sheetName = sheetName.Substring(0, 31);
 
             if (workbook.Worksheets.Any(ws => ws.Name == sheetName))
                 workbook.Worksheet(sheetName).Delete();
@@ -115,6 +117,7 @@ namespace Stundenplan_V2
                         var cell = sheet.Cell(startRow, t + 2);
 
                         bool gelb = false;
+                        bool belegt = false;
 
                         foreach (var u in slot.BelegteUNrn)
                         {
@@ -125,13 +128,18 @@ namespace Stundenplan_V2
                                 if (teil.Lehrer != lehrer)
                                     continue;
 
+                                belegt = true;
+
                                 string key =
                                     teil.Lehrer + "|" +
                                     teil.Fach + "|" +
                                     string.Join(",", teil.Klassen.OrderBy(x => x));
 
+                                bool fixiert = slot.FixUNrn.Contains(block.UNr);
+                                string fixSuffix = fixiert ? "   Fix" : "";
+
                                 cell.Value =
-    $"{string.Join(",", teil.Klassen)}\n{teil.Fach}\nUNr {block.UNr}    {block.Zeilentext}";
+    $"{string.Join(",", teil.Klassen)}\n{teil.Fach}\nUNr {block.UNr}    {block.Zeilentext}{fixSuffix}";
 
                                 bool istDoppel = false;
 
@@ -174,6 +182,8 @@ namespace Stundenplan_V2
 
                         if (slot.LehrerWunsch.ContainsKey(lehrer))
                             FärbeZelle(cell, slot.LehrerWunsch[lehrer]);
+                        else if (belegt)
+                            cell.Style.Fill.BackgroundColor = XLColor.LightGray;
 
                         if (gelb)
                             cell.Style.Fill.BackgroundColor = XLColor.Yellow;

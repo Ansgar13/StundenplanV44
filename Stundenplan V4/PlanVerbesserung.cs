@@ -358,18 +358,29 @@ namespace Stundenplan_V2
             foreach (var (fb, fs) in fixSlots)
                 model.Add(x[fb, fs] == 1);
 
-            // Lehrerregel
+            // Lehrerregel (A/B-Wochen-aware)
             for (int s = 0; s < S; s++)
             {
-                var map = new Dictionary<string, List<int>>();
+                var map = new Dictionary<string, List<(int b, string wg)>>();
                 for (int b = 0; b < B; b++)
+                {
+                    string wg = (blocks[b].WochenGruppe ?? "").Trim();
                     foreach (var l in blocks[b].Teile.Select(t => t.Lehrer).Distinct())
                     {
-                        if (!map.ContainsKey(l)) map[l] = new List<int>();
-                        map[l].Add(b);
+                        if (!map.ContainsKey(l)) map[l] = new List<(int, string)>();
+                        map[l].Add((b, wg));
                     }
+                }
                 foreach (var kv in map)
-                    model.Add(LinearExpr.Sum(kv.Value.Select(b => x[b, s])) <= 1);
+                    for (int i = 0; i < kv.Value.Count; i++)
+                        for (int j = i + 1; j < kv.Value.Count; j++)
+                        {
+                            var (b1, wg1) = kv.Value[i];
+                            var (b2, wg2) = kv.Value[j];
+                            if ((wg1 == "A" && wg2 == "B") || (wg1 == "B" && wg2 == "A"))
+                                continue;
+                            model.Add(x[b1, s] + x[b2, s] <= 1);
+                        }
             }
 
             // Klassenregel
@@ -527,9 +538,16 @@ namespace Stundenplan_V2
 
         private static void FühreTauschDurch(int[,] belegung, int b1, int s1, int b2, int s2)
         {
-            int tmp = belegung[b1, s1];
-            belegung[b1, s1] = belegung[b2, s2];
-            belegung[b2, s2] = tmp;
+            // Echter Slot-Tausch: Block b1 wechselt von s1 nach s2,
+            // Block b2 wechselt von s2 nach s1. Selbst-invers, weil
+            // zweimaliges Aufrufen den Ursprungszustand wiederherstellt.
+            int tmp1 = belegung[b1, s1];
+            belegung[b1, s1] = belegung[b1, s2];
+            belegung[b1, s2] = tmp1;
+
+            int tmp2 = belegung[b2, s2];
+            belegung[b2, s2] = belegung[b2, s1];
+            belegung[b2, s1] = tmp2;
         }
 
         private static bool IstGültig(
@@ -540,46 +558,77 @@ namespace Stundenplan_V2
             HashSet<(int, int)> fixSlots,
             int B, int S)
         {
-            // Lehrerregel
+            // Lehrerregel (A/B-Wochen-aware)
             for (int s = 0; s < S; s++)
             {
-                var lehrer = new Dictionary<string, int>();
+                // Lehrer → Liste (Block-Index, Wochengruppe)
+                var lehrer = new Dictionary<string, List<(int b, string wg)>>();
                 for (int b = 0; b < B; b++)
                 {
                     if (belegung[b, s] != 1) continue;
-                    foreach (var t in blocks[b].Teile)
+                    string wg = (blocks[b].WochenGruppe ?? "").Trim();
+                    foreach (var t in blocks[b].Teile.Select(x => x.Lehrer).Distinct())
                     {
-                        if (lehrer.ContainsKey(t.Lehrer)) return false;
-                        lehrer[t.Lehrer] = b;
+                        if (!lehrer.ContainsKey(t)) lehrer[t] = new List<(int, string)>();
+                        lehrer[t].Add((b, wg));
                     }
                 }
+                foreach (var kv in lehrer.Where(x => x.Value.Count > 1))
+                    for (int i = 0; i < kv.Value.Count; i++)
+                        for (int j = i + 1; j < kv.Value.Count; j++)
+                        {
+                            var (b1, wg1) = kv.Value[i];
+                            var (b2, wg2) = kv.Value[j];
+                            bool ab = (wg1 == "A" && wg2 == "B") || (wg1 == "B" && wg2 == "A");
+                            if (!ab) return false;
+                        }
             }
 
-            // Klassenregel
+            // Klassenregel (KKK- und A/B-Wochen-aware)
             for (int s = 0; s < S; s++)
             {
-                var klassen = new Dictionary<string, int>();
+                // Klasse → Liste (Block-Index, KKK, Wochengruppe)
+                var klassen = new Dictionary<string, List<(int b, string kkk, string wg)>>();
                 for (int b = 0; b < B; b++)
                 {
                     if (belegung[b, s] != 1) continue;
-                    foreach (var t in blocks[b].Teile)
-                        foreach (var k in t.Klassen)
+                    string kkk = (blocks[b].KKK ?? "").Trim();
+                    string wg  = (blocks[b].WochenGruppe ?? "").Trim();
+                    foreach (var k in blocks[b].Teile.SelectMany(t => t.Klassen).Distinct())
+                    {
+                        if (!klassen.ContainsKey(k))
+                            klassen[k] = new List<(int, string, string)>();
+                        klassen[k].Add((b, kkk, wg));
+                    }
+                }
+                foreach (var kv in klassen.Where(x => x.Value.Count > 1))
+                {
+                    var liste = kv.Value;
+                    for (int i = 0; i < liste.Count; i++)
+                        for (int j = i + 1; j < liste.Count; j++)
                         {
-                            if (klassen.ContainsKey(k) && klassen[k] != b)
-                                return false;
-                            klassen[k] = b;
+                            var (b1, k1, wg1) = liste[i];
+                            var (b2, k2, wg2) = liste[j];
+                            // gleicher Block (mehrere Teile mit derselben Klasse) → OK
+                            if (b1 == b2) continue;
+                            // gleiches nicht-leeres KKK → OK
+                            if (!string.IsNullOrEmpty(k1) && k1 == k2) continue;
+                            // A↔B-Woche → OK
+                            if ((wg1 == "A" && wg2 == "B") || (wg1 == "B" && wg2 == "A")) continue;
+                            return false;
                         }
                 }
             }
 
-            // Sperrslots
+            // Sperrslots (-3 immer, -2 wenn Verbot aktiv)
             for (int b = 0; b < B; b++)
                 for (int s = 0; s < S; s++)
                 {
                     if (belegung[b, s] != 1) continue;
                     foreach (var t in blocks[b].Teile)
                     {
-                        if (slots[s].LehrerWunsch.TryGetValue(t.Lehrer, out int lw) && lw == -3)
+                        if (slots[s].LehrerWunsch.TryGetValue(t.Lehrer, out int lw) &&
+                            (lw == -3 || (input.VerbotMinus2Verletzungen && lw == -2)))
                             return false;
                         foreach (var k in t.Klassen)
                             if (slots[s].KlassenWunsch.TryGetValue(k, out int kw) && kw == -3)
@@ -648,7 +697,8 @@ namespace Stundenplan_V2
                         input.StrafeEinzelstunde,
                         input.StrafeSpäteLkStunden,
                         input.StrafeHauptfachSpät,
-                        input.HauptfachSpätAnteilProzent).Quality;
+                        input.HauptfachSpätAnteilProzent).Quality
+                        - BerechneMinus2Strafe(belegung, blocks, slots, input);
 
                 case VerbesserungsZiel.SpäteDoppelstunden:
                     return -PlanBewertung.Berechne(belegung, blocks, slots, 1, 1, 0).Late;
@@ -799,6 +849,68 @@ namespace Stundenplan_V2
             }
 
             return gesamt;
+        }
+
+        // =====================================================
+        // -2-STRAFE: Slot-Verletzungen + fehlende freie Tage
+        // =====================================================
+        private static int BerechneMinus2Strafe(
+            int[,] belegung,
+            List<UnterrichtsBlock> blocks,
+            List<ZeitSlot> slots,
+            StundenplanInput input)
+        {
+            if (input.StrafeMinus2Verletzungen == 0) return 0;
+
+            int strafe = 0;
+            int B = blocks.Count;
+            int S = slots.Count;
+
+            // (a) Slot-Verletzungen: belegte Slots mit LehrerWunsch == -2
+            for (int b = 0; b < B; b++)
+                for (int s = 0; s < S; s++)
+                {
+                    if (belegung[b, s] != 1) continue;
+                    foreach (var t in blocks[b].Teile)
+                        if (slots[s].LehrerWunsch.TryGetValue(t.Lehrer, out int lw) && lw == -2)
+                        {
+                            strafe += input.StrafeMinus2Verletzungen;
+                            break; // pro Block×Slot einmal zählen
+                        }
+                }
+
+            // (b) Fehlende freie Tage für -2-markierte Lehrer
+            if (input.LehrerFreiTageMinus2 != null && input.LehrerFreiTageMinus2.Count > 0
+                && input.ExtraFreieTage != null)
+            {
+                var alleLehrern = blocks.SelectMany(b => b.Teile.Select(t => t.Lehrer))
+                    .Distinct().ToList();
+                var alleTage = slots.Select(s => s.WTag).Distinct().ToList();
+
+                foreach (var lehrer in alleLehrern)
+                {
+                    if (!input.LehrerFreiTageMinus2.Contains(lehrer)) continue;
+                    if (!input.ExtraFreieTage.TryGetValue(lehrer, out int gewünscht) || gewünscht <= 0) continue;
+
+                    var lehrerBlöcke = Enumerable.Range(0, B)
+                        .Where(b => blocks[b].Teile.Any(t => t.Lehrer == lehrer)).ToList();
+
+                    int freieTageTatsächlich = 0;
+                    foreach (var tag in alleTage)
+                    {
+                        var tagesSlots = Enumerable.Range(0, S)
+                            .Where(s => slots[s].WTag == tag).ToList();
+                        bool hatUnterricht = lehrerBlöcke.Any(b =>
+                            tagesSlots.Any(s => belegung[b, s] == 1));
+                        if (!hatUnterricht) freieTageTatsächlich++;
+                    }
+
+                    int fehlend = Math.Max(0, gewünscht - freieTageTatsächlich);
+                    strafe += fehlend * input.StrafeMinus2Verletzungen;
+                }
+            }
+
+            return strafe;
         }
 
         private static int[,] KopiereBelegung(int[,] quelle, int B, int S)
