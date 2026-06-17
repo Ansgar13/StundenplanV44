@@ -25,7 +25,7 @@
         </StackPanel>
 
         <CheckBox Grid.Row="2" x:Name="ChkFixUNrn" Margin="0,0,0,8"
-                  Content="Zusaetzlich: Treffer in Tabelle 'Fix UNrn' eintragen (Slots aus gewaehlter Loesung)"/>
+                  Content="Zusaetzlich: Treffer auch in Tabelle 'Fix UNrn' eintragen (bei 'X setzen') bzw. dort entfernen (bei 'X entfernen')"/>
 
         <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,0,0,10">
             <TextBlock Text="Loesung als Quelle fuer Fix UNrn:" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,10,0"/>

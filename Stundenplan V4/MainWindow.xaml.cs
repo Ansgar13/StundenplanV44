@@ -80,6 +80,27 @@ namespace Stundenplan_V2
                 // Sonst würden zuvor manuell geloeschte Lösungen aus dem Speicher
                 // beim nächsten Übernehmen/Schreiben wieder in die Datei zurückgeschrieben.
                 letzteSolutions = new();
+
+                // Dauerhaft gesicherte Lösungen (Sheet "Gesichert") automatisch
+                // einmischen, damit sie sofort wieder zur Auswahl stehen (z.B. im
+                // Plan-Editor), ohne dass der Nutzer sie erneut suchen muss. Das
+                // Sheet "Gesichert" selbst wird dabei nur GELESEN — es wird durch
+                // SchreibeInExcel niemals automatisch verändert oder gelöscht;
+                // einzige Möglichkeit zur Entfernung bleibt der eigene Löschen-Button.
+                try
+                {
+                    var gesicherte = LadeGesicherteLösungen();
+                    if (gesicherte.Count > 0)
+                    {
+                        letzteSolutions.AddRange(gesicherte);
+                        Log($"{gesicherte.Count} gesicherte Lösung(en) aus Sheet 'Gesichert' eingelesen.");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log($"Hinweis: Gesicherte Lösungen konnten nicht gelesen werden: {ex.Message}");
+                }
+
                 TxtStatus.Text = "Excel erfolgreich eingelesen.";
             }
         }
@@ -182,6 +203,21 @@ namespace Stundenplan_V2
             catch (Exception ex)
             {
                 Log($"Diagnose-Fehler: {ex.Message}");
+            }
+
+            // Gesicherte Lösungen (Sheet "Gesichert") erneut einmischen, NACHDEM
+            // alles für diesen Solver-Lauf geschrieben wurde — so stehen sie im
+            // Dropdown/Plan-Editor weiterhin zur Auswahl, ohne in die Lös-/Diag-/
+            // Dstd-F-Exporte DIESES Laufs hineingezogen zu werden.
+            try
+            {
+                var gesicherte = LadeGesicherteLösungen();
+                if (gesicherte.Count > 0)
+                    letzteSolutions.AddRange(gesicherte);
+            }
+            catch (Exception ex)
+            {
+                Log($"Hinweis: Gesicherte Lösungen konnten nicht erneut eingemischt werden: {ex.Message}");
             }
 
             TxtStatus.Text = "Stundenverteilung abgeschlossen.";
@@ -756,13 +792,34 @@ namespace Stundenplan_V2
         private List<(int quality, int badUnits, int[,] belegung, string label, List<UnterrichtsBlock> blocks)>
             LadeLösungenAusExcel()
         {
+            return LadeLösungenAusSheet("Lös", "");
+        }
+
+        // Liest alle dauerhaft gesicherten Lösungen aus dem Sheet "Gesichert".
+        // Wird von Button 2 (Excel laden) automatisch aufgerufen, damit gesicherte
+        // Lösungen nach jedem Neuladen sofort wieder verfügbar sind — unabhängig
+        // vom flüchtigen letzteSolutions-Speicher. Labels erhalten das Präfix
+        // "[Gesichert] ", damit sie im Ranking/Dropdown klar erkennbar sind.
+        private List<(int quality, int badUnits, int[,] belegung, string label, List<UnterrichtsBlock> blocks)>
+            LadeGesicherteLösungen()
+        {
+            return LadeLösungenAusSheet("Gesichert", "[Gesichert] ");
+        }
+
+        // Generische Lese-Logik für ein Lösungs-Sheet im Standardformat
+        // (Spalte A=WTag, B=Stunde, ab Spalte 3 je eine benannte Lösungsspalte
+        // mit kommagetrennten UNrn pro Zeile). Wird sowohl für "Lös" als auch
+        // für "Gesichert" verwendet.
+        private List<(int quality, int badUnits, int[,] belegung, string label, List<UnterrichtsBlock> blocks)>
+            LadeLösungenAusSheet(string sheetName, string labelPräfix)
+        {
             var result = new List<(int, int, int[,], string, List<UnterrichtsBlock>)>();
 
             using var wb = new XLWorkbook(excelPfad);
-            if (!wb.Worksheets.Any(ws => ws.Name == "Lös"))
+            if (!wb.Worksheets.Any(ws => ws.Name == sheetName))
                 return result;
 
-            var sheet = wb.Worksheet("Lös");
+            var sheet = wb.Worksheet(sheetName);
             var headerRow = sheet.Row(1);
 
             // Spaltennamen lesen (ab Spalte 3)
@@ -794,10 +851,10 @@ namespace Stundenplan_V2
             foreach (var kv in spaltenLabels)
             {
                 int col = kv.Key;
-                string label = kv.Value;
+                string label = labelPräfix + kv.Value;
 
                 // Leere Labels überspringen
-                if (string.IsNullOrEmpty(label)) continue;
+                if (string.IsNullOrEmpty(kv.Value)) continue;
 
                 var belegung = new int[B, S];
 
@@ -1225,6 +1282,346 @@ namespace Stundenplan_V2
         }
 
         // =====================================================
+        // BUTTON – LÖSUNG SICHERN
+        // Kopiert eine Lösung dauerhaft in das Sheet "Gesichert", das von
+        // SchreibeInExcel (Sheet "Lös") niemals angefasst wird. Gesicherte
+        // Lösungen bleiben damit über Button 3/6/9 und Plan-Editor-Läufe
+        // sowie über erneutes Laden (Button 2) hinweg erhalten, bis der
+        // Nutzer sie aktiv über "Gesicherte Lösung löschen" entfernt.
+        // =====================================================
+        private void BtnLoesungSichern_Click(object sender, RoutedEventArgs e)
+        {
+            if (input == null)
+            {
+                MessageBox.Show("Bitte zuerst Excel-Datei laden (Button 2).");
+                return;
+            }
+
+            // Lösungen: bevorzugt aus dem Speicher, sonst aus dem "Lös"-Sheet laden
+            var quelleLösungen = letzteSolutions.Count > 0
+                ? letzteSolutions
+                : LadeLösungenAusExcel();
+
+            if (quelleLösungen == null || quelleLösungen.Count == 0)
+            {
+                MessageBox.Show("Keine Lösungen vorhanden — bitte zuerst Stundenplan erstellen (Button 3) " +
+                                "oder Lösungen im 'Lös'-Sheet vorhanden.");
+                return;
+            }
+
+            var labels = quelleLösungen.Select(s => s.label).ToList();
+            string gewähltesLabel = ZeigeAuswahlDialog(
+                "Lösung sichern", "Welche Lösung soll dauerhaft gesichert werden?", labels);
+            if (gewähltesLabel == null) return;
+
+            string vorschlagName = gewähltesLabel;
+            string name = ZeigeTextEingabeDialog(
+                "Name der Sicherung",
+                "Unter welchem Namen soll die Lösung im Sheet 'Gesichert' abgelegt werden?\n" +
+                "(Muss eindeutig sein — eine bereits vorhandene Sicherung mit demselben Namen wird überschrieben.)",
+                vorschlagName);
+            if (string.IsNullOrWhiteSpace(name)) return;
+
+            var sol = quelleLösungen.First(s => s.label == gewähltesLabel);
+
+            try
+            {
+                SichereLösung(name.Trim(), sol.belegung, sol.blocks);
+                MessageBox.Show($"Lösung '{gewähltesLabel}' wurde als '{name.Trim()}' im Sheet 'Gesichert' abgelegt.\n\n" +
+                                 "Sie bleibt dort erhalten, bis du sie über 'Gesicherte Lösung löschen' aktiv entfernst — " +
+                                 "auch über erneutes Laden, Solver-Läufe und Plan-Editor-Übernahmen hinweg.",
+                                 "Gesichert", MessageBoxButton.OK, MessageBoxImage.Information);
+                Log($"Lösung '{gewähltesLabel}' als '{name.Trim()}' gesichert.");
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Fehler beim Sichern:\n" + ex.Message);
+                Log($"Fehler beim Sichern: {ex.Message}");
+            }
+        }
+
+        // Schreibt eine einzelne Lösung als eigene Spalte in das Sheet "Gesichert".
+        // Format identisch zu "Lös" (Spalte A=WTag, B=Stunde, ab Spalte 3 je eine
+        // benannte Lösung), damit LadeGesicherteLösungen sie unkompliziert wieder
+        // einlesen kann. Existiert bereits eine Spalte mit demselben Namen, wird
+        // sie überschrieben statt eine zweite anzulegen.
+        private void SichereLösung(string name, int[,] belegung, List<UnterrichtsBlock> blocks)
+        {
+            using var wb = new XLWorkbook(excelPfad);
+
+            IXLWorksheet sheet;
+            bool neuAngelegt = !wb.Worksheets.Any(ws => ws.Name == "Gesichert");
+            if (neuAngelegt)
+            {
+                sheet = wb.Worksheets.Add("Gesichert");
+                sheet.Cell(1, 1).Value = "WTag";
+                sheet.Cell(1, 2).Value = "Stunde";
+                for (int s = 0; s < input.Slots.Count; s++)
+                {
+                    sheet.Cell(s + 2, 1).Value = input.Slots[s].WTag;
+                    sheet.Cell(s + 2, 2).Value = input.Slots[s].Stunde;
+                }
+            }
+            else
+            {
+                sheet = wb.Worksheet("Gesichert");
+            }
+
+            // Spalte mit diesem Namen suchen (überschreiben) oder neue anlegen
+            var headerRow = sheet.Row(1);
+            int maxCol = headerRow.LastCellUsed()?.Address.ColumnNumber ?? 2;
+            int zielCol = -1;
+            for (int col = 3; col <= maxCol; col++)
+            {
+                if (headerRow.Cell(col).GetString().Trim() == name)
+                {
+                    zielCol = col;
+                    break;
+                }
+            }
+            if (zielCol == -1) zielCol = maxCol + 1;
+
+            sheet.Cell(1, zielCol).Value = name;
+
+            // Slot-Lookup wie in SchreibeInExcel: WTag_Stunde -> Zeilenindex im Sheet
+            int lastRow = sheet.LastRowUsed()?.RowNumber() ?? 1;
+            var rowLookup = new Dictionary<string, int>();
+            for (int row = 2; row <= lastRow; row++)
+            {
+                string wtag = sheet.Cell(row, 1).GetString().Trim();
+                if (int.TryParse(sheet.Cell(row, 2).GetString(), out int stunde))
+                    rowLookup[$"{wtag}_{stunde}"] = row;
+            }
+
+            for (int s = 0; s < input.Slots.Count; s++)
+            {
+                string key = $"{input.Slots[s].WTag}_{input.Slots[s].Stunde}";
+                if (!rowLookup.TryGetValue(key, out int row)) continue;
+
+                var unrList = new List<int>();
+                for (int b = 0; b < blocks.Count; b++)
+                    if (belegung[b, s] == 1)
+                        unrList.Add(blocks[b].UNr);
+
+                sheet.Cell(row, zielCol).Value = string.Join(", ", unrList);
+            }
+
+            wb.Save();
+        }
+
+        // =====================================================
+        // BUTTON – GESICHERTE LÖSUNG LÖSCHEN
+        // Einzige Möglichkeit, eine im Sheet "Gesichert" abgelegte Lösung
+        // wieder zu entfernen — geschieht NIE automatisch.
+        // =====================================================
+        private void BtnGesicherteLoesungLoeschen_Click(object sender, RoutedEventArgs e)
+        {
+            if (input == null)
+            {
+                MessageBox.Show("Bitte zuerst Excel-Datei laden (Button 2).");
+                return;
+            }
+
+            List<string> namen;
+            try
+            {
+                namen = LeseGesicherteNamen();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Fehler beim Lesen des Sheets 'Gesichert':\n" + ex.Message);
+                return;
+            }
+
+            if (namen.Count == 0)
+            {
+                MessageBox.Show("Es sind keine gesicherten Lösungen vorhanden.");
+                return;
+            }
+
+            string gewählterName = ZeigeAuswahlDialog(
+                "Gesicherte Lösung löschen",
+                "Welche gesicherte Lösung soll endgültig gelöscht werden?\n" +
+                "Dieser Vorgang kann nicht rückgängig gemacht werden.",
+                namen);
+            if (gewählterName == null) return;
+
+            var confirm = MessageBox.Show(
+                $"Gesicherte Lösung '{gewählterName}' wirklich endgültig löschen?",
+                "Bestätigung", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+            if (confirm != MessageBoxResult.Yes) return;
+
+            try
+            {
+                LöscheGesicherteLösung(gewählterName);
+                MessageBox.Show($"Gesicherte Lösung '{gewählterName}' wurde gelöscht.");
+                Log($"Gesicherte Lösung '{gewählterName}' gelöscht.");
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Fehler beim Löschen:\n" + ex.Message);
+                Log($"Fehler beim Löschen der gesicherten Lösung: {ex.Message}");
+            }
+        }
+
+        // Liest nur die Spaltennamen (Header) aus dem Sheet "Gesichert", ohne die
+        // Belegung selbst zu parsen — reicht für die Auswahl-Liste im Löschen-Dialog.
+        private List<string> LeseGesicherteNamen()
+        {
+            var namen = new List<string>();
+            using var wb = new XLWorkbook(excelPfad);
+            if (!wb.Worksheets.Any(ws => ws.Name == "Gesichert")) return namen;
+
+            var sheet = wb.Worksheet("Gesichert");
+            var headerRow = sheet.Row(1);
+            int maxCol = headerRow.LastCellUsed()?.Address.ColumnNumber ?? 2;
+            for (int col = 3; col <= maxCol; col++)
+            {
+                string label = headerRow.Cell(col).GetString().Trim();
+                if (!string.IsNullOrEmpty(label))
+                    namen.Add(label);
+            }
+            return namen;
+        }
+
+        // Entfernt eine einzelne benannte Spalte aus dem Sheet "Gesichert".
+        // Bleiben danach keine Lösungs-Spalten mehr übrig, wird das gesamte
+        // Sheet entfernt (sonst bliebe ein leeres WTag/Stunde-Geruest stehen).
+        private void LöscheGesicherteLösung(string name)
+        {
+            using var wb = new XLWorkbook(excelPfad);
+            if (!wb.Worksheets.Any(ws => ws.Name == "Gesichert")) return;
+
+            var sheet = wb.Worksheet("Gesichert");
+            var headerRow = sheet.Row(1);
+            int maxCol = headerRow.LastCellUsed()?.Address.ColumnNumber ?? 2;
+
+            int zielCol = -1;
+            for (int col = 3; col <= maxCol; col++)
+            {
+                if (headerRow.Cell(col).GetString().Trim() == name)
+                {
+                    zielCol = col;
+                    break;
+                }
+            }
+            if (zielCol == -1) { wb.Save(); return; } // nichts zu tun
+
+            sheet.Column(zielCol).Delete();
+
+            // Prüfen, ob noch irgendeine benannte Lösungs-Spalte übrig ist
+            var headerRowNeu = sheet.Row(1);
+            int maxColNeu = headerRowNeu.LastCellUsed()?.Address.ColumnNumber ?? 2;
+            bool nochEineDa = false;
+            for (int col = 3; col <= maxColNeu; col++)
+                if (!string.IsNullOrWhiteSpace(headerRowNeu.Cell(col).GetString()))
+                    { nochEineDa = true; break; }
+
+            if (!nochEineDa)
+                wb.Worksheets.Delete("Gesichert");
+
+            wb.Save();
+        }
+
+        // Einfacher modal Auswahl-Dialog (ComboBox + OK/Abbrechen), rein in C#
+        // aufgebaut, für die kurzen Listen-Auswahlen bei Sichern/Löschen.
+        // Gibt den gewählten Eintrag zurück, oder null bei Abbruch.
+        private string ZeigeAuswahlDialog(string titel, string frage, List<string> optionen)
+        {
+            var fenster = new Window
+            {
+                Title = titel,
+                Width = 420,
+                SizeToContent = SizeToContent.Height,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                Owner = this,
+                ResizeMode = ResizeMode.NoResize
+            };
+
+            var panel = new System.Windows.Controls.StackPanel { Margin = new Thickness(16) };
+            panel.Children.Add(new System.Windows.Controls.TextBlock
+            {
+                Text = frage, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 10)
+            });
+
+            var combo = new System.Windows.Controls.ComboBox { Margin = new Thickness(0, 0, 0, 16) };
+            foreach (var o in optionen) combo.Items.Add(o);
+            combo.SelectedIndex = 0;
+            panel.Children.Add(combo);
+
+            var btnPanel = new System.Windows.Controls.StackPanel
+            {
+                Orientation = System.Windows.Controls.Orientation.Horizontal,
+                HorizontalAlignment = HorizontalAlignment.Right
+            };
+            var btnOk = new System.Windows.Controls.Button
+            { Content = "OK", Width = 80, Margin = new Thickness(0, 0, 8, 0), IsDefault = true };
+            var btnAbbrechen = new System.Windows.Controls.Button
+            { Content = "Abbrechen", Width = 80, IsCancel = true };
+            btnPanel.Children.Add(btnOk);
+            btnPanel.Children.Add(btnAbbrechen);
+            panel.Children.Add(btnPanel);
+
+            fenster.Content = panel;
+
+            bool ok = false;
+            btnOk.Click += (s, e) => { ok = true; fenster.DialogResult = true; };
+            btnAbbrechen.Click += (s, e) => { fenster.DialogResult = false; };
+
+            bool? result = fenster.ShowDialog();
+            if (result != true || !ok) return null;
+            return combo.SelectedItem as string;
+        }
+
+        // Einfacher modal Texteingabe-Dialog (TextBox + OK/Abbrechen), rein in C#
+        // aufgebaut. Gibt den eingegebenen Text zurück, oder null bei Abbruch.
+        private string ZeigeTextEingabeDialog(string titel, string frage, string vorschlag)
+        {
+            var fenster = new Window
+            {
+                Title = titel,
+                Width = 420,
+                SizeToContent = SizeToContent.Height,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                Owner = this,
+                ResizeMode = ResizeMode.NoResize
+            };
+
+            var panel = new System.Windows.Controls.StackPanel { Margin = new Thickness(16) };
+            panel.Children.Add(new System.Windows.Controls.TextBlock
+            {
+                Text = frage, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 10)
+            });
+
+            var textBox = new System.Windows.Controls.TextBox
+            { Text = vorschlag, Margin = new Thickness(0, 0, 0, 16) };
+            panel.Children.Add(textBox);
+
+            var btnPanel = new System.Windows.Controls.StackPanel
+            {
+                Orientation = System.Windows.Controls.Orientation.Horizontal,
+                HorizontalAlignment = HorizontalAlignment.Right
+            };
+            var btnOk = new System.Windows.Controls.Button
+            { Content = "OK", Width = 80, Margin = new Thickness(0, 0, 8, 0), IsDefault = true };
+            var btnAbbrechen = new System.Windows.Controls.Button
+            { Content = "Abbrechen", Width = 80, IsCancel = true };
+            btnPanel.Children.Add(btnOk);
+            btnPanel.Children.Add(btnAbbrechen);
+            panel.Children.Add(btnPanel);
+
+            fenster.Content = panel;
+
+            bool ok = false;
+            btnOk.Click += (s, e) => { ok = true; fenster.DialogResult = true; };
+            btnAbbrechen.Click += (s, e) => { fenster.DialogResult = false; };
+
+            bool? result = fenster.ShowDialog();
+            if (result != true || !ok) return null;
+            return textBox.Text;
+        }
+
+        // =====================================================
         // BUTTON – GEZIELT IGNORIEREN
         // =====================================================
         private void BtnIgnorieren_Click(object sender, RoutedEventArgs e)
@@ -1437,6 +1834,8 @@ namespace Stundenplan_V2
                         fFächer.Contains(fach) ||
                         fZt2.Contains(zt2);
 
+                    bool xEntfernt = false;
+
                     // Treffer → markieren oder X entfernen
                     if (treffer)
                     {
@@ -1447,6 +1846,7 @@ namespace Stundenplan_V2
                             {
                                 row.Cell(colFix).Value = "";
                                 markiert++;
+                                xEntfernt = true;
                             }
                         }
                         else
@@ -1456,28 +1856,53 @@ namespace Stundenplan_V2
                         }
                     }
 
-                    // Bei aktivierter Checkbox: ALLE Zeilen mit "X" in Fix (X) für die
-                    // FixUNrn-Übernahme einsammeln — egal ob in diesem Aufruf gesetzt
-                    // oder schon vorher manuell markiert. Stand nach evtl. Aktion oben.
                     if (dialog.InFixUNrnEintragen && colUNr > 0)
                     {
-                        string fixWertJetzt = row.Cell(colFix).GetString().Trim().ToLower();
-                        if (fixWertJetzt == "x")
+                        if (dialog.FixierenEntfernen)
                         {
-                            // Robust: erst GetValue<int>, dann TryParse als Fallback
-                            int unr = 0;
-                            bool gotUnr = false;
-                            try
+                            // Entfernen-Modus: UNrn einsammeln, bei denen das 'X' in
+                            // DIESEM Aufruf entfernt wurde — diese sollen anschliessend
+                            // auch aus der Tabelle 'Fix UNrn' entfernt werden.
+                            if (xEntfernt)
                             {
-                                unr = row.Cell(colUNr).GetValue<int>();
-                                gotUnr = unr > 0;
+                                int unr = 0;
+                                bool gotUnr = false;
+                                try
+                                {
+                                    unr = row.Cell(colUNr).GetValue<int>();
+                                    gotUnr = unr > 0;
+                                }
+                                catch
+                                {
+                                    string s = row.Cell(colUNr).GetString().Trim();
+                                    gotUnr = int.TryParse(s, out unr) && unr > 0;
+                                }
+                                if (gotUnr) getroffeneUNrn.Add(unr);
                             }
-                            catch
+                        }
+                        else
+                        {
+                            // Setzen-Modus (bisheriges Verhalten unveraendert): ALLE
+                            // Zeilen mit "X" in Fix (X) für die FixUNrn-Übernahme
+                            // einsammeln — egal ob in diesem Aufruf gesetzt oder
+                            // schon vorher manuell markiert.
+                            string fixWertJetzt = row.Cell(colFix).GetString().Trim().ToLower();
+                            if (fixWertJetzt == "x")
                             {
-                                string s = row.Cell(colUNr).GetString().Trim();
-                                gotUnr = int.TryParse(s, out unr) && unr > 0;
+                                int unr = 0;
+                                bool gotUnr = false;
+                                try
+                                {
+                                    unr = row.Cell(colUNr).GetValue<int>();
+                                    gotUnr = unr > 0;
+                                }
+                                catch
+                                {
+                                    string s = row.Cell(colUNr).GetString().Trim();
+                                    gotUnr = int.TryParse(s, out unr) && unr > 0;
+                                }
+                                if (gotUnr) getroffeneUNrn.Add(unr);
                             }
-                            if (gotUnr) getroffeneUNrn.Add(unr);
                         }
                     }
                 }
@@ -1490,27 +1915,51 @@ namespace Stundenplan_V2
                 return;
             }
 
-            // Optionale Übernahme in Fix UNrn (basierend auf ausgewählter Lösung)
+            // Optionale Übernahme/Entfernung in/aus Fix UNrn
             int fixunrnEingetragen = 0;
+            int fixunrnEntfernt = 0;
             if (dialog.InFixUNrnEintragen)
             {
-                Log($"Fix-UNrn-Übernahme angefragt: {getroffeneUNrn.Count} UNrn gesammelt, Lösung='{dialog.GewählteLösung}'");
-                if (getroffeneUNrn.Count == 0)
+                if (dialog.FixierenEntfernen)
                 {
-                    MessageBox.Show("Keine UNrn mit 'X' in Spalte 'Fix (X)' gefunden — nichts zu übertragen.\n\n" +
-                        "Mögliche Ursachen:\n" +
-                        "- Die Filter haben keine Treffer ergeben UND vorher war keine Zeile mit 'X' markiert\n" +
-                        "- Spalte 'UNr' enthält keine gültigen Zahlen");
+                    Log($"Fix-UNrn-Entfernung angefragt: {getroffeneUNrn.Count} UNrn gesammelt (X gerade entfernt)");
+                    if (getroffeneUNrn.Count == 0)
+                    {
+                        // Kein Hinweis-Dialog nötig: 0 entfernte X bedeutet schlicht,
+                        // dass es nichts zu entfernen gab (z.B. keine Treffer mit X).
+                    }
+                    else
+                    {
+                        try
+                        {
+                            fixunrnEntfernt = EntferneAusFixUNrn(getroffeneUNrn);
+                        }
+                        catch (Exception ex)
+                        {
+                            MessageBox.Show($"Fehler beim Entfernen aus 'Fix UNrn': {ex.Message}");
+                        }
+                    }
                 }
                 else
                 {
-                    try
+                    Log($"Fix-UNrn-Übernahme angefragt: {getroffeneUNrn.Count} UNrn gesammelt, Lösung='{dialog.GewählteLösung}'");
+                    if (getroffeneUNrn.Count == 0)
                     {
-                        fixunrnEingetragen = TrageInFixUNrnEin(getroffeneUNrn, dialog.GewählteLösung);
+                        MessageBox.Show("Keine UNrn mit 'X' in Spalte 'Fix (X)' gefunden — nichts zu übertragen.\n\n" +
+                            "Mögliche Ursachen:\n" +
+                            "- Die Filter haben keine Treffer ergeben UND vorher war keine Zeile mit 'X' markiert\n" +
+                            "- Spalte 'UNr' enthält keine gültigen Zahlen");
                     }
-                    catch (Exception ex)
+                    else
                     {
-                        MessageBox.Show($"Fehler beim Eintragen in 'Fix UNrn': {ex.Message}");
+                        try
+                        {
+                            fixunrnEingetragen = TrageInFixUNrnEin(getroffeneUNrn, dialog.GewählteLösung);
+                        }
+                        catch (Exception ex)
+                        {
+                            MessageBox.Show($"Fehler beim Eintragen in 'Fix UNrn': {ex.Message}");
+                        }
                     }
                 }
             }
@@ -1519,7 +1968,11 @@ namespace Stundenplan_V2
                 ? $"In {markiert} Zeile(n) wurde das 'X' entfernt."
                 : $"{markiert} Zeile(n) wurden mit 'X' markiert.";
             if (dialog.InFixUNrnEintragen)
-                aktionsText += $"\n{fixunrnEingetragen} Eintrag/Einträge in 'Fix UNrn' hinzugefügt.";
+            {
+                aktionsText += dialog.FixierenEntfernen
+                    ? $"\n{fixunrnEntfernt} Eintrag/Einträge aus 'Fix UNrn' entfernt."
+                    : $"\n{fixunrnEingetragen} Eintrag/Einträge in 'Fix UNrn' hinzugefügt.";
+            }
 
             MessageBox.Show(
                 aktionsText + "\n\nBitte Button 2 (Excel laden) erneut drücken, damit die Änderungen wirksam werden.",
@@ -1527,7 +1980,11 @@ namespace Stundenplan_V2
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
             Log($"Gezielt fixieren ({(dialog.FixierenEntfernen ? "entfernen" : "setzen")}): {markiert} Zeilen betroffen" +
-                (dialog.InFixUNrnEintragen ? $", {fixunrnEingetragen} Fix UNrn-Einträge" : "") + ".");
+                (dialog.InFixUNrnEintragen
+                    ? (dialog.FixierenEntfernen
+                        ? $", {fixunrnEntfernt} Fix UNrn-Einträge entfernt"
+                        : $", {fixunrnEingetragen} Fix UNrn-Einträge")
+                    : "") + ".");
         }
 
         // Liest alle eindeutigen Werte für Klassen, Lehrer, Fächer und ZeilenText-2
@@ -1722,6 +2179,62 @@ namespace Stundenplan_V2
             wb.Save();
             Log($"  → {eingetragen} neu eingetragen, {bereitsVorhanden} bereits vorhanden");
             return eingetragen;
+        }
+
+        // Entfernt die angegebenen UNrn aus der Tabelle "Fix UNrn" (alle Zeilen,
+        // alle Spalten ab 3). Wird vom Dialog "Gezielt fixieren" bei aktivierter
+        // Checkbox UND Modus "X aus Treffern entfernen" aufgerufen: die UNrn, bei
+        // denen das 'X' in Spalte 'Fix (X)' gerade entfernt wurde, sollen dann
+        // konsequenterweise auch aus den fixierten Slots verschwinden.
+        // Gibt die Anzahl der tatsächlich entfernten Zelleneinträge zurück.
+        private int EntferneAusFixUNrn(HashSet<int> uNrn)
+        {
+            if (uNrn == null || uNrn.Count == 0) return 0;
+
+            using var wb = new ClosedXML.Excel.XLWorkbook(excelPfad);
+
+            if (!wb.Worksheets.Any(ws => ws.Name == "Fix UNrn"))
+            {
+                Log("Fix UNrn: Tabelle nicht vorhanden — nichts zu entfernen.");
+                return 0;
+            }
+
+            var fixSheet = wb.Worksheet("Fix UNrn");
+            int letzteZeile = fixSheet.LastRowUsed()?.RowNumber() ?? 1;
+
+            int entfernt = 0;
+
+            for (int row = 2; row <= letzteZeile; row++)
+            {
+                var xlRow = fixSheet.Row(row);
+                int lastCol = xlRow.LastCellUsed()?.Address.ColumnNumber ?? 2;
+                if (lastCol < 3) continue;
+
+                var verbleibende = new List<int>();
+
+                for (int col = 3; col <= lastCol; col++)
+                {
+                    string v = xlRow.Cell(col).GetString().Trim();
+                    if (!int.TryParse(v, out int unr))
+                        continue; // Zelle leer/ungültig -> einfach überspringen
+
+                    if (uNrn.Contains(unr))
+                        entfernt++;
+                    else
+                        verbleibende.Add(unr);
+                }
+
+                // Zeile neu schreiben: verbleibende UNrn ab Spalte 3, Rest leeren
+                for (int col = 3; col <= lastCol; col++)
+                    xlRow.Cell(col).Clear();
+
+                for (int i = 0; i < verbleibende.Count; i++)
+                    xlRow.Cell(3 + i).Value = verbleibende[i];
+            }
+
+            wb.Save();
+            Log($"Fix UNrn: {entfernt} Einträge zu {uNrn.Count} UNr(en) entfernt.");
+            return entfernt;
         }
 
         // =====================================================

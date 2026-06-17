@@ -42,7 +42,8 @@
                    Text="Links Lehrerplan, rechts Klassenplan. Klick auf eine Zelle zeigt im anderen Plan die zugehoerige Klasse bzw. den Lehrer. Ziehen: leere Zelle = verschieben, belegte Zelle gleicher Stundenzahl = tauschen, Parkbereich = entplanen. Ressourcenkonflikte werden hart gesperrt; Qualitaetsprobleme gelb gewarnt."/>
 
         <!-- Hauptbereich: Lehrerplan | Klassenplan | Vergleich-Vorher | Vergleich-Nachher | KlVgl-Vorher | KlVgl-Nachher -->
-        <Grid Grid.Row="2">
+        <ScrollViewer Grid.Row="2" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
+        <Grid>
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto"/>
                 <ColumnDefinition Width="Auto"/>
@@ -173,6 +174,7 @@
                 </DockPanel>
             </Border>
         </Grid>
+        </ScrollViewer>
 
         <!-- Parkbereich (waagerecht unter den Plaenen) -->
         <Border Grid.Row="3" BorderBrush="#CCC" BorderThickness="1" Margin="0,8,0,0"

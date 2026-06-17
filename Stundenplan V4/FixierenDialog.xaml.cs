@@ -18,7 +18,8 @@ namespace Stundenplan_V2
         public bool FixierenEntfernen { get; private set; } = false;
 
         /// <summary>
-        /// true → zusätzlich in Tabelle "Fix UNrn" eintragen (nur sinnvoll bei "X setzen")
+        /// true → zusätzlich in Tabelle "Fix UNrn" eintragen (bei "X setzen")
+        ///         bzw. dort entfernen (bei "X entfernen")
         /// </summary>
         public bool InFixUNrnEintragen { get; private set; } = false;
 
@@ -55,7 +56,7 @@ namespace Stundenplan_V2
             GewählteFächer      = LstFaecher.SelectedItems.Cast<string>().ToList();
             GewählteZeilentext2 = LstZeilentext2.SelectedItems.Cast<string>().ToList();
             FixierenEntfernen   = RbNichtFixieren.IsChecked == true;
-            InFixUNrnEintragen  = ChkFixUNrn.IsChecked == true && !FixierenEntfernen;
+            InFixUNrnEintragen  = ChkFixUNrn.IsChecked == true;
             GewählteLösung      = CboLoesung.SelectedItem as string ?? "";
 
             if (GewählteKlassen.Count == 0 && GewählteLehrer.Count == 0 &&
@@ -69,7 +70,10 @@ namespace Stundenplan_V2
                 return;
             }
 
-            if (InFixUNrnEintragen && string.IsNullOrEmpty(GewählteLösung))
+            // Eine Lösung als Quelle wird nur beim EINTRAGEN benötigt (die Slots
+            // kommen aus der Lösung). Beim ENTFERNEN aus 'Fix UNrn' reicht die
+            // UNr-Nummer selbst — unabhängig von einer Lösung.
+            if (InFixUNrnEintragen && !FixierenEntfernen && string.IsNullOrEmpty(GewählteLösung))
             {
                 MessageBox.Show(
                     "Für die Übernahme in 'Fix UNrn' muss eine Lösung ausgewählt sein.\n" +
