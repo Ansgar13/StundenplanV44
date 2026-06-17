@@ -1,4 +1,4 @@
-# Stundenplan V43 – Automatischer Stundenplangenerator
+# Stundenplan V49 – Automatischer Stundenplangenerator
 
 Stundenplan V43 ist ein Windows-Programm zur automatischen Erstellung von Schulstundenplänen. Es liest alle Unterrichtsdaten aus einer Excel-Datei, berechnet mit dem Google-OR-Tools-Solver optimale Stundenpläne und schreibt die Ergebnisse direkt in dieselbe Excel-Datei zurück.
 
