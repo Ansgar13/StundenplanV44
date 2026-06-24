@@ -1,6 +1,6 @@
 # Stundenplan V52 – Automatischer Stundenplangenerator
 
-Stundenplan V43 ist ein Windows-Programm zur automatischen Erstellung von Schulstundenplänen. Es liest alle Unterrichtsdaten aus einer Excel-Datei, berechnet mit dem Google-OR-Tools-Solver optimale Stundenpläne und schreibt die Ergebnisse direkt in dieselbe Excel-Datei zurück.
+Stundenplanprogramm Version 52 ist ein Windows-Programm zur automatischen Erstellung von Schulstundenplänen. Es liest alle Unterrichtsdaten aus einer Excel-Datei, berechnet mit dem Google-OR-Tools-Solver optimale Stundenpläne und schreibt die Ergebnisse direkt in dieselbe Excel-Datei zurück.
 
 ## Kernfunktionen
 
